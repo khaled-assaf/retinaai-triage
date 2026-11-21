@@ -1,0 +1,37 @@
+[
+  {
+    "id": "normal",
+    "label": "Normal (synthetic)",
+    "file": "normal.jpg",
+    "expected_grade": 0,
+    "description": "SYNTHETIC placeholder. No visible lesions."
+  },
+  {
+    "id": "mild",
+    "label": "Mild NPDR (synthetic)",
+    "file": "mild.jpg",
+    "expected_grade": 1,
+    "description": "SYNTHETIC placeholder. A few microaneurysms; mock model is unsure -> review."
+  },
+  {
+    "id": "moderate",
+    "label": "Moderate NPDR (synthetic)",
+    "file": "moderate.jpg",
+    "expected_grade": 2,
+    "description": "SYNTHETIC placeholder. Microaneurysms, exudates, haemorrhages."
+  },
+  {
+    "id": "severe",
+    "label": "Severe NPDR (synthetic)",
+    "file": "severe.jpg",
+    "expected_grade": 3,
+    "description": "SYNTHETIC placeholder. Extensive haemorrhages and cotton-wool spots."
+  },
+  {
+    "id": "blurry",
+    "label": "Blurry (ungradable) (synthetic)",
+    "file": "blurry.jpg",
+    "expected_grade": null,
+    "description": "SYNTHETIC placeholder. Out of focus; should fail the quality check."
+  }
+]
