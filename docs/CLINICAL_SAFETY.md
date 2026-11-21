@@ -102,6 +102,20 @@ The first matching rule wins:
   decisions are computed once (`reports/content.py`) and only the wording differs. Tests check
   that EN and RO produce identical decisions.
 
+## Robustness to poor-quality photos (AI teammate, 2026-11-21)
+
+Tested on simulated poor photos (blur, glare, narrow field of view, colour cast, noise).
+The deployed model stays **v0.1-baseline** (`model_inference.pt`, sha256 `ce771f11…`), with T = 0.15 and U = 0.25.
+
+- **Grading agreement on very poor photos** drops from 0.89 to 0.80. A model trained only on clean
+  photos drops to 0.45. A version fine-tuned with more bad photos was not better, so we didn't switch.
+- **The review rule (top score < 0.6 or gap < 0.15) adapts to quality.** It sends about
+  **18% → 33% → 48%** of cases to a clinician on good, moderate and very poor photos, and catches
+  most wrong refer / don't-refer calls.
+- **Cases decided without review stay about 90% accurate.** Poor real photos mean a **higher review
+  load, not more missed patients**.
+- **Our own image-quality check (blur / exposure / framing) stays essential** in front of the model.
+
 ## Known limitations (state these in the demo)
 
 1. Training data are limited to APTOS; generalizability to other populations and cameras is unknown.

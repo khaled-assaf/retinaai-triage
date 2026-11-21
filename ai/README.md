@@ -24,3 +24,5 @@ and goes in `backend/models/`. `*.pt`, `*.pth`, `*.onnx`, `*.h5`, `*.ckpt`, `*.s
 - [x] 5 demo images received (`demo_images.zip`, gitignored); `backend/scripts/setup_real_samples.py` installs them locally
 - [ ] APTOS competition rules: check before showing the images publicly (G17)
 - [ ] Cosmetic: on APTOS photos cut off at top/bottom, the Grad-CAM overlay tints the black padding bands blue
+
+**Update (2026-11-21):** robustness tested on poor-quality photos; no model change. Results are in `docs/CLINICAL_SAFETY.md` ("Robustness to poor-quality photos").
