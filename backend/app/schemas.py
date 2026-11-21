@@ -6,10 +6,15 @@ from typing import Annotated, Literal, Optional
 from pydantic import BaseModel, Field
 
 Grade = Annotated[int, Field(ge=0, le=4)]
-TriageLevel = Literal["urgent", "review", "referable", "retake", "routine"]
+TriageLevel = Literal["emergency", "urgent", "review", "referable", "retake", "routine"]
+ActionCode = Literal["emergency", "urgent_grade4", "urgent_grade3", "review_priority", "review",
+                     "referable", "retake", "routine"]
 ReviewStatus = Literal["pending", "reviewed"]
-FollowupType = Literal["referral", "rescreen", "retake", "clinician_review"]
-FollowupStatus = Literal["pending", "scheduled", "attended", "missed", "cancelled"]
+ClinicalStatus = Literal["pending_review", "confirmed", "modified", "not_required"]
+Eye = Literal["right", "left", "unknown"]
+Symptom = Literal["sudden_vision_loss", "curtain_shadow", "flashes_floaters", "other_acute"]
+FollowupType = Literal["emergency_assessment", "referral", "rescreen", "retake", "clinician_review"]
+FollowupStatus = Literal["pending", "scheduled", "unconfirmed", "attended", "missed", "cancelled"]
 
 DISCLAIMER = "Research prototype. Not for clinical diagnosis."
 
@@ -38,14 +43,34 @@ class Triage(BaseModel):
     level: TriageLevel
     label: str
     action: str
+    action_code: Optional[ActionCode] = Field(None, description="Rule outcome; translations are keyed by it")
     reason: Optional[str] = Field(None, description="Why this level was chosen, e.g. why the AI was uncertain")
     source: Literal["ai", "clinician"] = "ai"
+    safety_rule: Optional[Literal["referable", "urgent"]] = Field(
+        None, description="Set when an experimental safety flag sent the case to clinician review"
+    )
+    review_priority: Optional[Literal["priority"]] = Field(None, description="'priority' = priority clinician review")
+    symptoms: list[Symptom] = Field(default_factory=list, description="Urgent symptoms that triggered 'emergency'")
+    ai_triage: Optional[dict] = Field(None, description="The original AI triage, kept after a clinician override")
 
 
 class Review(BaseModel):
     status: ReviewStatus
     clinician_grade: Optional[Grade] = None
     note: Optional[str] = None
+    reviewed_at: Optional[str] = None
+
+
+class Symptoms(BaseModel):
+    collected: bool = Field(description="false = urgent symptoms were not asked/recorded")
+    reported: list[Symptom] = Field(default_factory=list)
+
+
+class AuditEvent(BaseModel):
+    at: str
+    actor: Literal["ai", "clinician", "system"]
+    event: str
+    details: dict
 
 
 class Followup(BaseModel):
@@ -92,8 +117,14 @@ class Case(BaseModel):
     prediction: Optional[Prediction] = None
     heatmap_url: Optional[str] = None
     image_url: str
+    eye: Eye = "unknown"
+    symptoms: Symptoms = Field(default_factory=lambda: Symptoms(collected=False))
     triage: Triage
     review: Review
+    clinical_status: ClinicalStatus = Field(
+        description="pending_review = AI suggestion is provisional; confirmed / modified by a clinician; "
+                    "not_required = no review in the configured workflow (image retake)"
+    )
     model_version: str
     processing_ms: int
     report_url: str
@@ -109,6 +140,10 @@ class CaseSummary(BaseModel):
     patient_ref: Optional[str] = None
     triage_level: TriageLevel
     triage_label: str
+    review_priority: Optional[Literal["priority"]] = None
+    action_code: Optional[ActionCode] = None
+    eye: Eye = "unknown"
+    clinical_status: ClinicalStatus = "pending_review"
     grade: Optional[Grade] = None
     grade_label: Optional[str] = None
     confidence: Optional[float] = None

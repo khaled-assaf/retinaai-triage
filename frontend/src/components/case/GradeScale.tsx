@@ -1,4 +1,5 @@
 import type { Prediction } from "../../types";
+import { roundTo100 } from "../../utils/scores";
 
 /* Full static class names so Tailwind sees them */
 const SEGMENT = [
@@ -17,10 +18,10 @@ export function GradeScale({ prediction }: { prediction: Prediction }) {
     <div className="rounded-3xl bg-white/75 p-6 shadow-xs ring-1 ring-slate-200/80 backdrop-blur-sm">
       <div className="flex items-baseline justify-between">
         <p className="text-3xl font-semibold tracking-tight text-slate-900">
-          Grade {prediction.grade}
+          AI grade {prediction.grade}
         </p>
-        <p className="text-xs font-medium text-slate-400">
-          {(prediction.confidence * 100).toFixed(0)}% confidence
+        <p className="text-xs font-medium text-slate-400" title="Not a calibrated probability or diagnostic accuracy">
+          AI model score: {Math.max(...roundTo100(prediction.probabilities))}%
         </p>
       </div>
       <p className="mt-0.5 text-sm text-slate-500">{prediction.label}</p>

@@ -40,9 +40,10 @@ PHONE_PREFIX = {"RO": "+40", "DE": "+49", "AT": "+43", "FR": "+33", "BE": "+32",
                 "IE": "+353", "NL": "+31", "PL": "+48", "PT": "+351", "SE": "+46"}
 
 # sample id -> weight for historical screenings (roughly a screening population)
-SAMPLE_WEIGHTS = {"normal": 45, "moderate": 18, "mild": 12, "severe": 13, "blurry": 12}
+# ("proliferative" only exists in the real sample set, backend/samples_real/.)
+SAMPLE_WEIGHTS = {"normal": 45, "moderate": 18, "mild": 12, "severe": 8, "proliferative": 5, "blurry": 12}
 # The most recent visits of the first patients: guarantees every triage level is in today's queue.
-RECENT_FIXED = ["severe", "mild", "moderate", "blurry", "normal", "severe", "moderate", "mild"]
+RECENT_FIXED = ["severe", "mild", "moderate", "blurry", "normal", "proliferative", "moderate", "mild"]
 
 
 def _ascii(s: str) -> str:

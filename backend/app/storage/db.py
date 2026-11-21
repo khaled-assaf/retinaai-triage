@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ..config import get_settings
-from ..services.triage import URGENCY_ORDER
+from ..services.triage import URGENCY_ORDER, clinical_status
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS cases (
@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS cases (
     image_path      TEXT,
     image_mime      TEXT,
     heatmap_path    TEXT,
-    thumbnail_path  TEXT
+    thumbnail_path  TEXT,
+    eye             TEXT NOT NULL DEFAULT 'unknown',  -- right | left | unknown
+    symptoms_json   TEXT                              -- null = not collected; [] = none reported
 );
 CREATE INDEX IF NOT EXISTS idx_cases_level ON cases(triage_level);
 CREATE INDEX IF NOT EXISTS idx_cases_patient ON cases(patient_ref);
@@ -73,6 +75,17 @@ CREATE TABLE IF NOT EXISTS followups (
 CREATE INDEX IF NOT EXISTS idx_followups_patient ON followups(patient_ref);
 CREATE INDEX IF NOT EXISTS idx_followups_case ON followups(case_id);
 
+-- Audit log: original AI result, clinician decisions, overrides (who/what/when/why).
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_id    TEXT NOT NULL,
+    at         TEXT NOT NULL,
+    actor      TEXT NOT NULL,      -- "ai" | "clinician" | "system"
+    event      TEXT NOT NULL,      -- "case_created" | "clinician_review" | ...
+    details    TEXT NOT NULL       -- JSON
+);
+CREATE INDEX IF NOT EXISTS idx_audit_case ON audit_log(case_id);
+
 -- Share tokens for the public European Retina Passport links.
 CREATE TABLE IF NOT EXISTS shares (
     token      TEXT PRIMARY KEY,
@@ -86,6 +99,14 @@ CREATE TABLE IF NOT EXISTS shares (
 _URGENCY_SQL = "CASE triage_level " + " ".join(
     f"WHEN '{level}' THEN {i}" for i, level in enumerate(URGENCY_ORDER)
 ) + f" ELSE {len(URGENCY_ORDER)} END"
+# Within the same level, priority clinician reviews come first.
+_PRIORITY_SQL = "CASE json_extract(triage_json, '$.review_priority') WHEN 'priority' THEN 0 ELSE 1 END"
+
+# Columns added after the first release: added in place to existing databases
+# (no migration framework, no need to delete storage_data/).
+_ADDED_COLUMNS = {
+    "cases": {"eye": "TEXT NOT NULL DEFAULT 'unknown'", "symptoms_json": "TEXT"},
+}
 
 
 def _db_path() -> Path:
@@ -116,6 +137,11 @@ def init_db() -> None:
     with connect() as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
+        for table, cols in _ADDED_COLUMNS.items():
+            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for col, ddl in cols.items():
+                if col not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
 
 def count_cases() -> int:
@@ -149,6 +175,8 @@ def create_case(
     thumbnail_jpg: bytes,
     heatmap_png: Optional[bytes],
     created_at: Optional[str] = None,
+    eye: str = "unknown",
+    symptoms: Optional[list[str]] = None,
 ) -> dict:
     """Insert a case, write its files, and return the full case dict."""
     files_dir = _files_dir()
@@ -158,8 +186,9 @@ def create_case(
         with connect() as conn:
             cur = conn.execute(
                 """INSERT INTO cases (created_at, patient_ref, quality_json, prediction_json,
-                       triage_level, triage_json, model_version, processing_ms, image_mime)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       triage_level, triage_json, model_version, processing_ms, image_mime,
+                       eye, symptoms_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     created_at or now_iso(),
                     patient_ref,
@@ -170,6 +199,8 @@ def create_case(
                     model_version,
                     processing_ms,
                     image_mime,
+                    eye,
+                    json.dumps(symptoms) if symptoms is not None else None,
                 ),
             )
             case_id = f"c_{cur.lastrowid:04d}"
@@ -201,22 +232,41 @@ def _row(case_id: str) -> Optional[sqlite3.Row]:
         return conn.execute("SELECT * FROM cases WHERE case_id = ?", (case_id,)).fetchone()
 
 
+def _symptoms(row: sqlite3.Row) -> dict:
+    raw = row["symptoms_json"]
+    if raw is None:
+        return {"collected": False, "reported": []}
+    return {"collected": True, "reported": json.loads(raw)}
+
+
+def _clinical(row: sqlite3.Row, triage: dict, pred: Optional[dict]) -> str:
+    ai_grade = pred["grade"] if pred else None
+    review = {"status": row["review_status"], "clinician_grade": row["clinician_grade"]}
+    return clinical_status(row["triage_level"], review, ai_grade)
+
+
 def _to_case(row: sqlite3.Row) -> dict:
     cid = row["case_id"]
+    triage = json.loads(row["triage_json"])
+    pred = json.loads(row["prediction_json"]) if row["prediction_json"] else None
     return {
         "case_id": cid,
         "created_at": row["created_at"],
         "patient_ref": row["patient_ref"],
         "quality": json.loads(row["quality_json"]),
-        "prediction": json.loads(row["prediction_json"]) if row["prediction_json"] else None,
+        "prediction": pred,
         "heatmap_url": f"/api/cases/{cid}/heatmap" if row["heatmap_path"] else None,
         "image_url": f"/api/cases/{cid}/image",
-        "triage": json.loads(row["triage_json"]),
+        "eye": row["eye"] or "unknown",
+        "symptoms": _symptoms(row),
+        "triage": triage,
         "review": {
             "status": row["review_status"],
             "clinician_grade": row["clinician_grade"],
             "note": row["note"],
+            "reviewed_at": row["reviewed_at"],
         },
+        "clinical_status": _clinical(row, triage, pred),
         "model_version": row["model_version"],
         "processing_ms": row["processing_ms"],
         "report_url": f"/api/cases/{cid}/report.pdf",
@@ -233,6 +283,10 @@ def _to_summary(row: sqlite3.Row) -> dict:
         "patient_ref": row["patient_ref"],
         "triage_level": row["triage_level"],
         "triage_label": triage["label"],
+        "review_priority": triage.get("review_priority"),
+        "action_code": triage.get("action_code"),
+        "eye": row["eye"] or "unknown",
+        "clinical_status": _clinical(row, triage, pred),
         "grade": pred["grade"] if pred else None,
         "grade_label": pred["label"] if pred else None,
         "confidence": pred["confidence"] if pred else None,
@@ -253,7 +307,7 @@ def list_queue(review_status: Optional[str] = None, limit: int = 200) -> list[di
     if review_status:
         sql += " AND review_status = ?"
         params.append(review_status)
-    sql += f" ORDER BY {_URGENCY_SQL}, created_at DESC, id DESC LIMIT ?"
+    sql += f" ORDER BY {_URGENCY_SQL}, {_PRIORITY_SQL}, created_at DESC, id DESC LIMIT ?"
     params.append(limit)
     with connect() as conn:
         return [_to_summary(r) for r in conn.execute(sql, params).fetchall()]
@@ -267,6 +321,21 @@ def list_patient_cases(patient_ref: str) -> list[dict]:
             (patient_ref,),
         ).fetchall()
     return [_to_summary(r) for r in rows]
+
+
+def add_audit(case_id: str, actor: str, event: str, details: dict, at: Optional[str] = None) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO audit_log (case_id, at, actor, event, details) VALUES (?, ?, ?, ?, ?)",
+            (case_id, at or now_iso(), actor, event, json.dumps(details)),
+        )
+
+
+def get_audit(case_id: str) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM audit_log WHERE case_id = ? ORDER BY id", (case_id,)).fetchall()
+    return [{"at": r["at"], "actor": r["actor"], "event": r["event"], "details": json.loads(r["details"])}
+            for r in rows]
 
 
 def update_triage(case_id: str, triage: dict) -> None:

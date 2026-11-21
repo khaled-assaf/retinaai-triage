@@ -7,6 +7,7 @@
   --font-display: "Newsreader Variable", ui-serif, Georgia, serif;
 
   /* Triage palette — used for badges, queue rows, passport accents */
+  --color-triage-emergency: #7f1d1d; /* red-900 */
   --color-triage-urgent: #dc2626; /* red-600 */
   --color-triage-review: #d97706; /* amber-600 */
   --color-triage-referable: #ea580c; /* orange-600 */

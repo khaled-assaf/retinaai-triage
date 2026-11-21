@@ -11,6 +11,9 @@ os.environ["STORAGE_DIR"] = _TMP
 os.environ["DB_PATH"] = str(Path(_TMP) / "test.db")
 os.environ["USE_MOCK_MODEL"] = "true"
 os.environ["SEED_DEMO_CASES"] = "true"
+# Tests must not depend on anyone's local backend/.env (real model, real samples, ...).
+os.environ["RETINAAI_IGNORE_DOTENV"] = "1"
+os.environ["SAMPLES_DIR"] = str(Path(__file__).resolve().parent.parent / "samples")
 
 BACKEND = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BACKEND))

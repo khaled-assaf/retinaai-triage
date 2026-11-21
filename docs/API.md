@@ -4,7 +4,16 @@ Base URL: `http://localhost:8000`. All endpoints live under `/api`.
 Live, interactive docs: **http://localhost:8000/docs** (generated from `backend/app/schemas.py`).
 If you change the contract, update this file and `schemas.py` together.
 
-> Research prototype. Not for clinical diagnosis.
+> Research prototype with simulated data. Not for clinical use. Clinical rules and their
+> rationale: [`CLINICAL_SAFETY.md`](CLINICAL_SAFETY.md).
+
+**Clinical-safety update (2026-11-21):**
+- new level `emergency` (urgent symptoms override the AI);
+- safety rules are now clinician-review **flags**, never automatic referrals;
+- new case fields: `eye`, `symptoms`, `clinical_status`, `triage.action_code`,
+  `triage.review_priority`, `triage.ai_triage`, `review.reviewed_at`;
+- new follow-up status `unconfirmed`;
+- new endpoint `GET /api/cases/{id}/audit`.
 
 ## Endpoints
 
@@ -48,6 +57,10 @@ directly in `<img src>`.
 |---|---|---|
 | `image` | file, JPG or PNG, ≤ `MAX_UPLOAD_MB` (10 MB) | yes |
 | `patient_ref` | string ≤ 100 chars | no |
+| `eye` | `right` \| `left` \| `unknown` (default: not recorded) | no |
+| `symptoms` | omit = **not collected**; `none` = asked, none reported; or comma-separated codes `sudden_vision_loss`, `curtain_shadow`, `flashes_floaters`, `other_acute`. **Any code → `emergency`** | no |
+
+`POST /api/samples/{id}/analyze` accepts the same `eye` and `symptoms` as query parameters.
 
 ```bash
 curl -F image=@eye.jpg -F patient_ref=DEMO-007 http://localhost:8000/api/analyze
@@ -153,16 +166,43 @@ Field values:
   `"Uncertain: confidence 0.43 is below the 0.60 threshold"` or
   `"Uncertain: top two grades are only 0.09 apart (minimum 0.15)"`.
 - `triage.source`: `"ai"`, or `"clinician"` after a clinician graded the case (see PATCH).
+- `triage.safety_rule`: `null`, `"referable"` or `"urgent"` when a safety rule escalated the AI's
+  top grade (see the rule order below). `triage.reason` then explains it, e.g.
+  `"Safety rule: AI grade 1, but 18% chance of referable disease (grade 2 or worse; threshold 15%)"`.
 - `followup`: the task this case created (see **Follow-ups** below).
 - `report_url`: the European Retina Passport PDF for this case.
 
 | level | label | when |
 |---|---|---|
-| `retake` | Retake image | quality failed |
-| `review` | Needs clinician review | confidence < 0.6 **or** top-2 probabilities within 0.15 (any grade) |
-| `routine` | Routine screening, rescreen in 12 months | grade 0-1 |
-| `referable` | Schedule specialist appointment | grade 2 |
-| `urgent` | Urgent referral | grade 3-4 |
+Rule order (the first match wins). `action_code` identifies the outcome; `level` drives queue
+order and colours:
+
+| # | level | action_code | label | when | follow-up |
+|---|---|---|---|---|---|
+| 0 | `emergency` | `emergency` | Emergency eye assessment | urgent symptoms reported (**overrides everything**) | `emergency_assessment`, same day |
+| 1 | `retake` | `retake` | Retake image | quality failed | `retake`, 7 d |
+| 2 | `review` | `review` | Needs clinician review | top score < 0.6 **or** top-2 within 0.15 | `clinician_review`, 2 d |
+| 3 | `review` | `review` | Needs clinician review | **safety flag:** grade 0-1 but score on grade ≥ 2 ≥ 15% | `clinician_review`, 2 d |
+| 4 | `review` | `review_priority` | Priority clinician review | **safety flag:** grade 2 but score on grade ≥ 3 ≥ 25% | `clinician_review`, 1 d |
+| 5 | `routine` | `routine` | Routine screening, rescreen in 12 months | grade 0-1 | `rescreen`, 365 d |
+| 5 | `referable` | `referable` | Non-urgent ophthalmology referral | grade 2 | `referral`, 21 d |
+| 5 | `urgent` | `urgent_grade3` | High-priority ophthalmology assessment | grade 3 | `referral`, 14 d |
+| 5 | `urgent` | `urgent_grade4` | Urgent ophthalmology referral | grade 4 | `referral`, 14 d |
+
+The safety thresholds are experimental, not clinically validated referral criteria. Queue order:
+`emergency > urgent > review (priority first) > referable > retake > routine`.
+
+Other new fields:
+- `clinical_status`:
+  - `pending_review`: the AI suggestion is **provisional**;
+  - `confirmed`: a clinician reviewed it, same grade;
+  - `modified`: the clinician's grade differs;
+  - `not_required`: image retake, no review needed.
+- `eye`: `right` | `left` | `unknown`.
+- `symptoms`: `{"collected": bool, "reported": [codes]}`.
+- `triage.review_priority`: `"priority"` or null.
+- `triage.symptoms`: the symptom codes that triggered `emergency`.
+- `triage.ai_triage`: the original AI triage, kept after a clinician override.
 
 Every case automatically gets a follow-up (placeholder deadlines, to be confirmed by the medical teammate):
 
@@ -233,11 +273,30 @@ Full case (same shape as `/analyze`). `404 {"detail": "Case not found"}`.
 
 Returns the updated full case. An out-of-range grade returns `422`.
 
+The clinician's decision supersedes the AI. The AI `prediction` is never changed, and each review
+is written to the audit log.
+
 Side effects when `status` is `"reviewed"`:
 - the case's open `clinician_review` follow-up is marked `attended`;
-- if `clinician_grade` is set, triage is recomputed from that grade (`triage.source = "clinician"`,
-  so the case moves in the queue) and the matching follow-up is planned (e.g. grade 3 → urgent
-  `referral` due in 14 days).
+- if `clinician_grade` is set:
+  - triage is recomputed from that grade (`triage.source = "clinician"`, so the case moves in the
+    queue);
+  - the original AI triage is kept in `triage.ai_triage`;
+  - the matching follow-up is planned (e.g. grade 3 → high-priority `referral` due in 14 days);
+  - reported urgent symptoms keep the case at `emergency`.
+
+### GET /api/cases/{id}/audit
+
+```json
+[
+  {"at": "2026-11-21T10:00:00Z", "actor": "ai", "event": "case_created",
+   "details": {"model_version": "effb0-v0.1-baseline", "prediction": {"grade": 2, "...": "..."}, "triage": {"...": "..."}}},
+  {"at": "2026-11-21T11:00:00Z", "actor": "clinician", "event": "clinician_review",
+   "details": {"clinician_grade": 3, "ai_grade": 2, "reason": "IRMA seen",
+               "triage_before": {"level": "referable", "action_code": "referable", "source": "ai"},
+               "triage_after": {"level": "urgent", "action_code": "urgent_grade3", "source": "clinician"}}}
+]
+```
 
 ### GET /api/samples
 
@@ -372,9 +431,11 @@ Status lifecycle:
 ```
 pending ──book appointment──▶ scheduled ──▶ attended
    │                              │
-   │                              └─ appointment passed by >24h, not marked attended ─▶ missed (automatic)
+   │                              └─ appointment passed by >24h, not confirmed ─▶ unconfirmed ─▶ attended | missed (staff)
    └──────────── any open status ─▶ cancelled
 ```
+
+A passed appointment is **never** marked `missed` automatically.
 
 `overdue` (computed) = `status == "pending"` and past `due_date`. `days_until_due` is negative
 when overdue.

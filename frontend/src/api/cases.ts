@@ -1,11 +1,20 @@
-import type { Case, CaseSummary, ReviewUpdate } from "../types";
+import type { Case, CaseSummary, Eye, ReviewUpdate } from "../types";
 import { api } from "./client";
 
+/** Screening context sent with every analysis. symptoms: undefined = not asked,
+ *  "none" = asked and none reported, or comma-separated symptom codes. */
+export interface ScreeningContext {
+  eye: Eye;
+  symptoms?: string;
+}
+
 /** POST /api/analyze — multipart upload, returns the full case */
-export function analyze(file: File, patientRef?: string): Promise<Case> {
+export function analyze(file: File, patientRef?: string, ctx?: ScreeningContext): Promise<Case> {
   const fd = new FormData();
   fd.append("image", file);
   if (patientRef) fd.append("patient_ref", patientRef);
+  if (ctx) fd.append("eye", ctx.eye);
+  if (ctx?.symptoms) fd.append("symptoms", ctx.symptoms);
   return api<Case>("/api/analyze", { method: "POST", body: fd });
 }
 

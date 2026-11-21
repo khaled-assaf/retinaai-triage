@@ -1,6 +1,4 @@
-"""Model interface. THE AI TEAMMATE IMPLEMENTS THE REAL VERSION HERE.
-
-The backend only ever calls these three functions:
+"""Model interface: the backend only ever calls these three functions.
 
     load_model(weights_path)      -> model             (called ONCE at startup)
     predict(model, img_rgb)       -> {"grade": int, "probabilities": [5 floats]}
@@ -9,17 +7,18 @@ The backend only ever calls these three functions:
 `img_rgb` is a uint8 numpy array of shape (H, W, 3) in RGB order, full resolution,
 exactly as decoded from the upload. It has already passed the quality check.
 
-While USE_MOCK_MODEL=true (the default), `load_mock_model()` is used instead of
-`load_model()`, and predict/gradcam dispatch to the mock implementation. That lets
-the frontend build against realistic data before the real model exists.
+Two implementations:
+  - REAL (USE_MOCK_MODEL=false): the AI teammate's EfficientNet-B0 in real_model.py.
+    torch/timm are imported lazily, only then (pip install -r requirements-ml.txt).
+  - MOCK (USE_MOCK_MODEL=true, default): deterministic fake outputs so the rest of
+    the team can work without the model.
 
-To plug in the real model:
+Switching to the real model:
   1. pip install -r requirements-ml.txt
-  2. Implement the three TODO sections below (load_model, _real_predict, _real_gradcam).
-  3. Put the checkpoint at backend/models/model.pth (gitignored), or set MODEL_WEIGHTS_PATH.
-  4. Set USE_MOCK_MODEL=false in backend/.env and restart. GET /api/health should
-     show "mock": false and your model_version.
-  5. Run `pytest` - the API tests only check the shape of the output.
+  2. put the checkpoint at backend/models/model_inference.pt (gitignored),
+     or point MODEL_WEIGHTS_PATH at it
+  3. USE_MOCK_MODEL=false in backend/.env, delete backend/storage_data/, restart
+  4. GET /api/health -> "mock": false, "model_version": "effb0-v0.1-baseline"
 """
 from __future__ import annotations
 
@@ -38,76 +37,34 @@ GRADE_LABELS = [
     "Proliferative DR",
 ]
 
-# TODO(AI): bump this whenever you ship a new checkpoint so cases record which model graded them.
-REAL_MODEL_VERSION = "real-v0"
 MOCK_MODEL_VERSION = "mock-v0"
+# Version recorded on every case graded by the real model. Comes from the
+# MODEL_VERSION env var; bump it whenever a new checkpoint is shipped.
+DEFAULT_REAL_MODEL_VERSION = "effb0-v0.1-baseline"
 
 
-# =============================================================== real model (TODO)
+# ======================================================================= real model
 def load_model(weights_path: str | Path) -> Any:
-    """Load the trained model once. Return whatever object predict()/gradcam() need.
-
-    TODO(AI): implement. Sketch:
-
-        import torch, timm
-        model = timm.create_model("efficientnet_b0", pretrained=False, num_classes=5)
-        state = torch.load(weights_path, map_location="cpu")
-        model.load_state_dict(state)
-        model.eval()
-        torch.set_num_threads(4)            # CPU inference
-        return model
-
-    Notes:
-      - Requests run in a threadpool and share this single model object. Keep
-        predict()/gradcam() free of global mutable state (eval mode + no_grad is fine).
-      - Raise a clear exception if the file is missing; startup will log it and
-        fall back to the mock model so the demo keeps working.
-    """
+    """Load the AI teammate's checkpoint on CPU (see real_model.load_model)."""
     weights_path = Path(weights_path)
     if not weights_path.is_file():
         raise FileNotFoundError(f"Model weights not found at {weights_path}")
-    raise NotImplementedError("Real model loading not implemented yet (see TODOs in ml/inference.py)")
+    from . import real_model  # lazy: torch/timm are only needed for the real model
 
-
-def _preprocess(img_rgb: np.ndarray) -> Any:
-    """TODO(AI): convert img_rgb -> model input tensor.
-
-    !!! Preprocessing here MUST match what the checkpoint was trained with !!!
-    Same crop of the black border, same resize (e.g. 224 or 384), same color
-    normalisation (e.g. Ben Graham's Gaussian-subtract trick, or ImageNet
-    mean/std), same channel order (RGB). A mismatch silently ruins accuracy.
-    Ideally import the exact transform from the training code in ai/.
-    """
-    raise NotImplementedError
+    return real_model.load_model(str(weights_path))
 
 
 def _real_predict(model: Any, img_rgb: np.ndarray) -> dict:
-    """TODO(AI): run the model and return {"grade": int, "probabilities": [5 floats]}.
+    from . import real_model
 
-        x = _preprocess(img_rgb)                     # (1, 3, H, W)
-        with torch.no_grad():
-            probs = torch.softmax(model(x), dim=1)[0].tolist()
-        return {"grade": int(np.argmax(probs)), "probabilities": probs}
-
-    If you trained a regression model (common for APTOS / QWK), convert the score
-    into 5 pseudo-probabilities so triage still works, and tell the backend owner.
-    """
-    raise NotImplementedError
+    return real_model.predict(model, img_rgb)
 
 
 def _real_gradcam(model: Any, img_rgb: np.ndarray) -> bytes:
-    """TODO(AI): Grad-CAM for the predicted class, returned as PNG bytes of the
-    heatmap blended over the (resized) original image.
+    from . import real_model
 
-    With the `grad-cam` package:
-        from pytorch_grad_cam import GradCAM
-        from pytorch_grad_cam.utils.image import show_cam_on_image
-        cam = GradCAM(model=model, target_layers=[model.conv_head])  # pick last conv layer
-        mask = cam(input_tensor=_preprocess(img_rgb))[0]
-        overlay = show_cam_on_image(resized_rgb_float01, mask, use_rgb=True)
-        return _encode_png_rgb(overlay)
-    """
-    raise NotImplementedError
+    # target="expected_grade" (default): regions pushing towards MORE severe disease.
+    return real_model.gradcam(model, img_rgb, max_width=512)
 
 
 # ======================================================================= mock model
@@ -128,7 +85,11 @@ def is_mock(model: Any) -> bool:
 def model_version(model: Any) -> str:
     if model is None:
         return "none"
-    return MOCK_MODEL_VERSION if is_mock(model) else REAL_MODEL_VERSION
+    if is_mock(model):
+        return MOCK_MODEL_VERSION
+    import os
+
+    return os.getenv("MODEL_VERSION", DEFAULT_REAL_MODEL_VERSION)
 
 
 def image_seed(img_rgb: np.ndarray) -> int:

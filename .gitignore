@@ -45,3 +45,7 @@ backend/models/
 Thumbs.db
 .idea/
 .vscode/
+
+# Real demo images (APTOS 2019): licence for public display not confirmed, keep them local
+*.zip
+backend/samples_real/

@@ -1,8 +1,11 @@
 """Follow-up tracking: referrals, rescreens, retakes, clinician reviews.
 
 Status lifecycle:  pending -> scheduled -> attended
-                                       \\-> missed   (automatically, once the appointment has passed)
+                                       \\-> unconfirmed (automatically, 24 h after the appointment
+                                                        if nobody confirmed attendance)
+                                                        -> attended | missed (staff confirm)
                    any open status -> cancelled
+Medical decision: a passed appointment is never marked "missed" automatically.
 A pending follow-up past its due date is "overdue" (computed, not stored).
 """
 from __future__ import annotations
@@ -13,9 +16,9 @@ from typing import Optional
 
 from .db import connect, iso, now_iso
 
-OPEN_STATUSES = ("pending", "scheduled", "missed")
-# A scheduled appointment counts as missed this long after its start time,
-# unless someone marked it attended.
+OPEN_STATUSES = ("pending", "scheduled", "unconfirmed", "missed")
+# A scheduled appointment becomes "attendance unconfirmed" this long after its start
+# time, unless someone marked it attended. Staff then confirm attended or missed.
 MISSED_GRACE = timedelta(hours=24)
 
 _SELECT = """
@@ -93,11 +96,12 @@ def get_case_followup(case_id: str) -> Optional[dict]:
 
 
 def sweep_missed(now: Optional[datetime] = None) -> int:
-    """Mark scheduled appointments that are long past as missed. Returns how many changed."""
+    """Mark scheduled appointments that are long past as "unconfirmed" (attendance not
+    confirmed). Returns how many changed. Name kept for compatibility."""
     cutoff = iso((now or datetime.now(timezone.utc)) - MISSED_GRACE)
     with connect() as conn:
         cur = conn.execute(
-            "UPDATE followups SET status = 'missed', updated_at = ? "
+            "UPDATE followups SET status = 'unconfirmed', updated_at = ? "
             "WHERE status = 'scheduled' AND appointment_at IS NOT NULL AND appointment_at < ?",
             (now_iso(), cutoff),
         )
@@ -105,8 +109,8 @@ def sweep_missed(now: Optional[datetime] = None) -> int:
 
 
 def _sort_key(f: dict):
-    # What needs attention first: missed, then overdue, then pending/scheduled by due date, then closed.
-    if f["status"] == "missed":
+    # What needs attention first: missed / unconfirmed, then overdue, then upcoming by due date, then closed.
+    if f["status"] in ("missed", "unconfirmed"):
         bucket = 0
     elif f["overdue"]:
         bucket = 1
@@ -191,7 +195,7 @@ def resolve_by_new_case(patient_ref: str, new_case_id: str, at: Optional[str] = 
     with connect() as conn:
         cur = conn.execute(
             "UPDATE followups SET status = 'attended', resolved_case_id = ?, updated_at = ? "
-            "WHERE patient_ref = ? AND type IN ('rescreen', 'retake') AND status IN ('pending', 'scheduled') "
+            "WHERE patient_ref = ? AND type IN ('rescreen', 'retake') AND status IN ('pending', 'scheduled', 'unconfirmed') "
             "AND case_id != ?",
             (new_case_id, at or now_iso(), patient_ref, new_case_id),
         )

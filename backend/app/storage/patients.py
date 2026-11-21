@@ -60,7 +60,7 @@ def list_patients(country: Optional[str] = None, q: Optional[str] = None) -> lis
                (SELECT c.triage_level FROM cases c WHERE c.patient_ref = p.patient_ref
                   ORDER BY c.created_at DESC, c.id DESC LIMIT 1) AS last_triage_level,
                (SELECT COUNT(*) FROM followups f WHERE f.patient_ref = p.patient_ref
-                  AND f.status IN ('pending', 'scheduled', 'missed')) AS open_followups
+                  AND f.status IN ('pending', 'scheduled', 'unconfirmed', 'missed')) AS open_followups
         FROM patients p WHERE 1 = 1"""
     params: list = []
     if country:

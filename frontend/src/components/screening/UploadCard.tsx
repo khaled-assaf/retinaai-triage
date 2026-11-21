@@ -1,13 +1,13 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FileImage, Loader2, ScanEye, UploadCloud, X } from "lucide-react";
-import { analyze } from "../../api/cases";
+import { analyze, type ScreeningContext } from "../../api/cases";
 import { useToast } from "../ui/ToastProvider";
 
 const MAX_BYTES = 10 * 1024 * 1024; // MAX_UPLOAD_MB on the backend
 const ACCEPTED_TYPES = ["image/jpeg", "image/png"];
 
-export function UploadCard() {
+export function UploadCard({ context }: { context: () => ScreeningContext | null }) {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [patientRef, setPatientRef] = useState("");
@@ -42,9 +42,14 @@ export function UploadCard() {
 
   async function submit() {
     if (!file || busy) return;
+    const ctx = context();
+    if (!ctx) {
+      push("Select at least one urgent symptom, or choose 'None reported' / 'Not asked'", "error");
+      return;
+    }
     setBusy(true);
     try {
-      const c = await analyze(file, patientRef.trim() || undefined);
+      const c = await analyze(file, patientRef.trim() || undefined, ctx);
       navigate(`/case/${c.case_id}`);
     } catch (e) {
       push(e instanceof Error ? e.message : "Analysis failed", "error");

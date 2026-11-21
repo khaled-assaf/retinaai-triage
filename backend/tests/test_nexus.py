@@ -66,14 +66,16 @@ def test_followups_sorted_by_attention(client):
         assert f["status"] == "pending" and f["days_until_due"] < 0
 
 
-def test_schedule_then_auto_missed(client):
+def test_schedule_then_attendance_unconfirmed(client):
     fid = client.post("/api/samples/severe/analyze?patient_ref=MISS-1").json()["followup"]["followup_id"]
     past = iso(datetime.now(timezone.utc) - timedelta(days=3))
     r = client.patch(f"/api/followups/{fid}", json={"appointment_at": past})
     assert r.json()["status"] == "scheduled"  # appointment_at implies scheduled
-    # Listing sweeps appointments >24h in the past to "missed".
+    # Listing sweeps appointments >24h in the past to "unconfirmed" (never "missed" automatically).
     listed = {f["followup_id"]: f for f in client.get("/api/followups?patient_ref=MISS-1").json()}
-    assert listed[fid]["status"] == "missed"
+    assert listed[fid]["status"] == "unconfirmed"
+    # Staff confirm the patient did not attend.
+    assert client.patch(f"/api/followups/{fid}", json={"status": "missed"}).json()["status"] == "missed"
     # The coordinator reschedules, the patient attends.
     future = iso(datetime.now(timezone.utc) + timedelta(days=2))
     assert client.patch(f"/api/followups/{fid}", json={"appointment_at": future}).json()["status"] == "scheduled"
@@ -129,7 +131,9 @@ def test_translations_complete():
     for lang in LANGUAGES:
         assert set(T[lang]) == keys, f"{lang} missing {keys - set(T[lang])}"
         assert len(T[lang]["grades"]) == 5
-        assert set(T[lang]["triage_levels"]) == set(T["en"]["triage_levels"])
+        assert set(T[lang]["actions"]) == set(T["en"]["actions"])
+        for nested in ("clinical_statuses", "workflow", "symptoms", "followup_types", "followup_statuses", "eyes"):
+            assert set(T[lang][nested]) == set(T["en"][nested]), (lang, nested)
 
 
 @pytest.mark.parametrize("lang", list(LANGUAGES))
@@ -169,9 +173,26 @@ def test_share_link(client):
 def test_dashboard(client):
     d = client.get("/api/dashboard").json()
     assert d["totals"]["patients"] >= 30 and d["totals"]["screenings"] >= 30
-    assert set(d["triage"]) == {"urgent", "review", "referable", "retake", "routine"}
-    assert {"pending", "scheduled", "attended", "missed", "cancelled", "overdue"} <= set(d["followups"])
+    assert set(d["triage"]) == {"emergency", "urgent", "review", "referable", "retake", "routine"}
+    assert {"pending", "scheduled", "unconfirmed", "attended", "missed", "cancelled", "overdue"} <= set(d["followups"])
     assert 0 < d["attendance_rate"] <= 1
     assert len(d["by_country"]) >= 6 and all(len(c["country"]) == 2 for c in d["by_country"])
     months = [m["month"] for m in d["monthly"]]
     assert months == sorted(months) and len(months) >= 6
+
+
+@pytest.mark.parametrize("rule,probs", [("referable", [0.02, 0.80, 0.10, 0.05, 0.03]),
+                                         ("urgent", [0.0, 0.05, 0.65, 0.25, 0.05])])
+def test_passport_pdf_for_safety_escalation(client, rule, probs):
+    from app.reports.pdf import build_passport_pdf
+    from app.services.triage import triage_case
+
+    case = client.post("/api/samples/normal/analyze?patient_ref=SAFE-1").json()
+    grade = probs.index(max(probs))
+    case["prediction"] = {"grade": grade, "label": "x", "confidence": max(probs), "probabilities": probs}
+    case["triage"] = triage_case(True, case["prediction"], 0.6)
+    assert case["triage"]["safety_rule"] == rule
+    for lang in LANGUAGES:
+        pdf = build_passport_pdf(case=case, patient=None, history=[], image_path=None,
+                                 heatmap_path=None, lang=lang)
+        assert pdf.startswith(b"%PDF")

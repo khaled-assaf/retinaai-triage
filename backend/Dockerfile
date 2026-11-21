@@ -5,7 +5,10 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-# For the real model, also: COPY requirements-ml.txt . && pip install -r requirements-ml.txt
+# Real model: uncomment, and mount/copy the weights to /app/models/model_inference.pt
+# COPY requirements-ml.txt .
+# RUN pip install --no-cache-dir -r requirements-ml.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+COPY scripts ./scripts
 
 COPY app ./app
 COPY samples ./samples

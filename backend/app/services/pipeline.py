@@ -10,7 +10,9 @@ import numpy as np
 from ..ml import inference
 from ..storage import db, followups, patients
 from .quality import assess_quality
-from .triage import FOLLOW_UP_RULES, triage_case, triage_from_clinician
+from .triage import URGENT_SYMPTOMS, follow_up_for, triage_case, triage_from_clinician
+
+EYES = ("right", "left", "unknown")
 
 THUMBNAIL_WIDTH = 256
 
@@ -73,13 +75,23 @@ def analyze_image(
     model: Any,
     confidence_threshold: float,
     created_at: Optional[str] = None,
+    eye: str = "unknown",
+    symptoms: Optional[list[str]] = None,
 ) -> dict:
     """Run the whole pipeline on raw upload bytes and persist the case.
 
     Also: makes sure the patient exists, plans the case's follow-up from the
     triage level, and closes the patient's earlier open rescreen/retake.
     `created_at` is only for seeding simulated history.
+    `eye`: "right" | "left" | "unknown" (not recorded).
+    `symptoms`: None = not collected; [] = asked, none reported; codes = urgent symptoms.
     """
+    if eye not in EYES:
+        raise InvalidImageError(f"eye must be one of: {', '.join(EYES)}")
+    if symptoms:
+        unknown = [s for s in symptoms if s not in URGENT_SYMPTOMS]
+        if unknown:
+            raise InvalidImageError(f"Unknown symptom code(s): {', '.join(unknown)}")
     t0 = time.perf_counter()
     ext, mime = sniff_type(data)
     img_rgb = decode_image(data)
@@ -91,7 +103,7 @@ def analyze_image(
         prediction = _validate_prediction(inference.predict(model, img_rgb))
         heatmap = inference.gradcam(model, img_rgb)
 
-    triage = triage_case(quality["passed"], prediction, confidence_threshold)
+    triage = triage_case(quality["passed"], prediction, confidence_threshold, symptoms=symptoms)
     thumbnail = make_thumbnail(img_rgb)
     processing_ms = int((time.perf_counter() - t0) * 1000)
 
@@ -110,15 +122,25 @@ def analyze_image(
         thumbnail_jpg=thumbnail,
         heatmap_png=heatmap,
         created_at=created_at,
+        eye=eye,
+        symptoms=symptoms,
     )
+    db.add_audit(case["case_id"], "ai", "case_created", {
+        "model_version": case["model_version"],
+        "quality": {"passed": quality["passed"], "reason": quality["reason"]},
+        "prediction": prediction,
+        "triage": triage,
+        "eye": eye,
+        "symptoms": symptoms,
+    }, at=case["created_at"])
     if patient_ref:
         followups.resolve_by_new_case(patient_ref, case["case_id"], at=case["created_at"])
-    rule = FOLLOW_UP_RULES[triage["level"]]
+    fu_type, due_days = follow_up_for(triage["action_code"], prediction["grade"] if prediction else None)
     followups.create_followup(
         case["case_id"],
         patient_ref,
-        rule["type"],
-        followups.due_date_from(case["created_at"], rule["due_days"]),
+        fu_type,
+        followups.due_date_from(case["created_at"], due_days),
         created_at=case["created_at"],
     )
     return full_case(case["case_id"])
@@ -134,29 +156,44 @@ def full_case(case_id: str) -> Optional[dict]:
 
 
 def review_case(case_id: str, status: str, clinician_grade: Optional[int], note: Optional[str]) -> Optional[dict]:
-    """Save a clinician review.
+    """Save a clinician review (the clinician's decision supersedes the AI).
 
-    - Reviewing closes the case's open "clinician_review" follow-up (marked attended).
-    - A clinician grade overrides the AI triage (triage.source = "clinician") and plans
-      the follow-up that grade calls for (or re-plans a still-pending one).
+    - The original AI prediction is never changed; the AI's triage is kept in
+      triage["ai_triage"], and every review is written to the audit log
+      (old/new triage, grade, note = reason, timestamp).
+    - Reviewing closes the case's open "clinician_review" follow-up (attended).
+    - A clinician grade sets the triage (source "clinician") and plans the follow-up
+      for it. Reported urgent symptoms keep the case at "emergency".
     """
-    case = db.update_review(case_id, status, clinician_grade, note)
-    if case is None:
+    before = db.get_case(case_id)
+    if before is None:
         return None
-    if status != "reviewed":
-        return full_case(case_id)
-
-    current = followups.get_case_followup(case_id)
-    if current and current["type"] == "clinician_review" and current["status"] in followups.OPEN_STATUSES:
-        followups.update_followup(current["followup_id"], status="attended", note="Reviewed by clinician")
-        current = None  # the review step is done; plan the next one below
-    if clinician_grade is not None:
-        triage = triage_from_clinician(clinician_grade)
-        db.update_triage(case_id, triage)
-        rule = FOLLOW_UP_RULES[triage["level"]]
-        due = followups.due_date_from(db.now_iso(), rule["due_days"])
-        if current is None:
-            followups.create_followup(case_id, case["patient_ref"], rule["type"], due)
-        elif current["status"] == "pending":
-            followups.replace_case_followup(case_id, rule["type"], due)
+    case = db.update_review(case_id, status, clinician_grade, note)
+    old_triage = before["triage"]
+    new_triage = None
+    if status == "reviewed":
+        current = followups.get_case_followup(case_id)
+        if current and current["type"] == "clinician_review" and current["status"] in followups.OPEN_STATUSES:
+            followups.update_followup(current["followup_id"], status="attended", note="Reviewed by clinician")
+            current = None  # the review step is done; plan the next one below
+        if clinician_grade is not None:
+            new_triage = triage_from_clinician(clinician_grade, symptoms=before["symptoms"]["reported"])
+            new_triage["ai_triage"] = old_triage.get("ai_triage") or {
+                k: v for k, v in old_triage.items() if k != "ai_triage"
+            }
+            db.update_triage(case_id, new_triage)
+            fu_type, due_days = follow_up_for(new_triage["action_code"], clinician_grade)
+            due = followups.due_date_from(db.now_iso(), due_days)
+            if current is None:
+                followups.create_followup(case_id, case["patient_ref"], fu_type, due)
+            elif current["status"] == "pending":
+                followups.replace_case_followup(case_id, fu_type, due)
+    db.add_audit(case_id, "clinician", "clinician_review", {
+        "status": status,
+        "clinician_grade": clinician_grade,
+        "reason": note,
+        "ai_grade": before["prediction"]["grade"] if before["prediction"] else None,
+        "triage_before": {k: old_triage.get(k) for k in ("level", "action_code", "source")},
+        "triage_after": {k: new_triage.get(k) for k in ("level", "action_code", "source")} if new_triage else None,
+    })
     return full_case(case_id)

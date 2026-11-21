@@ -1,14 +1,18 @@
 /**
  * Follow-up tracking API — matches the backend contract in backend/app/schemas.py
  * (GET/PATCH /api/followups, POST /api/followups/{id}/remind).
- * Falls back to simulated fixtures (with localStorage overrides) when the
- * endpoint is unavailable, so the UI keeps working in offline development.
+ * Falls back to simulated fixtures (with localStorage overrides) ONLY when the
+ * backend cannot be reached at all, so the UI keeps working in offline development.
+ * When the backend is up, its errors (400/404/...) are thrown as ApiError and shown
+ * to the user — they must never be hidden behind fake fixture data.
  */
 
 import type { TriageLevel } from "../types";
+import { api, ApiError } from "./client";
 
-export type FollowupStatus = "pending" | "scheduled" | "attended" | "missed" | "cancelled";
-export type FollowupType = "referral" | "rescreen" | "retake" | "clinician_review";
+/** "unconfirmed" = appointment passed >24 h ago and attendance was not confirmed (never auto-"missed") */
+export type FollowupStatus = "pending" | "scheduled" | "unconfirmed" | "attended" | "missed" | "cancelled";
+export type FollowupType = "emergency_assessment" | "referral" | "rescreen" | "retake" | "clinician_review";
 
 export interface Followup {
   followup_id: string;
@@ -116,55 +120,72 @@ function fixturesWithOverrides(): Followup[] {
   return seedFollowups().map((f) => ({ ...f, ...overrides[f.followup_id] }));
 }
 
+/** True once getFollowups() had to fall back to fixtures (backend unreachable). */
+let fixtureMode = false;
+
 export async function getFollowups(): Promise<FollowupsResult> {
   try {
-    const res = await fetch("/api/followups");
-    if (!res.ok) throw new Error(String(res.status));
-    return { items: (await res.json()) as Followup[], simulated: false };
-  } catch {
-    return { items: fixturesWithOverrides(), simulated: true };
+    const items = await api<Followup[]>("/api/followups");
+    fixtureMode = false;
+    return { items, simulated: false };
+  } catch (e) {
+    // status 0 = network error (backend down / no proxy). 502-504 = the Vite proxy
+    // could not reach :8000. Anything else is a real backend answer: surface it.
+    if (e instanceof ApiError && (e.status === 0 || e.status >= 502)) {
+      fixtureMode = true;
+      return { items: fixturesWithOverrides(), simulated: true };
+    }
+    throw e;
   }
 }
 
 export async function updateFollowup(id: string, patch: FollowupPatch): Promise<Followup | null> {
-  try {
-    const res = await fetch(`/api/followups/${encodeURIComponent(id)}`, {
+  if (!fixtureMode) {
+    return api<Followup>(`/api/followups/${encodeURIComponent(id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
     });
-    if (!res.ok) throw new Error(String(res.status));
-    return (await res.json()) as Followup;
-  } catch {
-    const overrides = loadOverrides();
-    overrides[id] = { ...(overrides[id] ?? {}), ...patch };
-    saveOverrides(overrides);
-    return fixturesWithOverrides().find((f) => f.followup_id === id) ?? null;
   }
+  const overrides = loadOverrides();
+  overrides[id] = { ...(overrides[id] ?? {}), ...patch };
+  saveOverrides(overrides);
+  return fixturesWithOverrides().find((f) => f.followup_id === id) ?? null;
 }
 
-/** POST /api/followups/{id}/remind — sends an SMS reminder. */
+/** Result of POST /api/followups/{id}/remind (SIMULATED: the backend sends nothing). */
+export interface ReminderResult {
+  followup: Followup;
+  channel: "sms";
+  language: string;
+  message: string;
+  simulated: boolean;
+}
+
+/** POST /api/followups/{id}/remind: logs a simulated SMS reminder in the patient's language. */
 export async function remindFollowup(id: string): Promise<Followup | null> {
-  try {
-    const res = await fetch(`/api/followups/${encodeURIComponent(id)}/remind`, {
+  if (!fixtureMode) {
+    const body = await api<ReminderResult>(`/api/followups/${encodeURIComponent(id)}/remind`, {
       method: "POST",
     });
-    if (!res.ok) throw new Error(String(res.status));
-    const body = (await res.json()) as { followup: Followup };
+    lastReminder = body;
     return body.followup;
-  } catch {
-    const overrides = loadOverrides();
-    const current = fixturesWithOverrides().find((f) => f.followup_id === id);
-    if (!current) return null;
-    const updated: Partial<Followup> = {
-      reminders_sent: current.reminders_sent + 1,
-      last_reminder_at: new Date().toISOString(),
-    };
-    overrides[id] = { ...(overrides[id] ?? {}), ...updated };
-    saveOverrides(overrides);
-    return { ...current, ...updated };
   }
+  const overrides = loadOverrides();
+  const current = fixturesWithOverrides().find((f) => f.followup_id === id);
+  if (!current) return null;
+  const updated: Partial<Followup> = {
+    reminders_sent: current.reminders_sent + 1,
+    last_reminder_at: new Date().toISOString(),
+  };
+  overrides[id] = { ...(overrides[id] ?? {}), ...updated };
+  saveOverrides(overrides);
+  lastReminder = null;
+  return { ...current, ...updated };
 }
+
+/** The last reminder text returned by the backend (shown in the toast). */
+export let lastReminder: ReminderResult | null = null;
 
 /** Reset localStorage overrides (used by the "reset demo" button). */
 export function resetFollowupOverrides() {

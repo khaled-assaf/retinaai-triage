@@ -2,7 +2,14 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, ClipboardCheck, FileCheck2 } from "lucide-react";
 import { getCase } from "../api/cases";
-import type { Case } from "../types";
+import {
+  CLINICAL_STATUS_LABELS,
+  EMERGENCY_NOTE,
+  EYE_LABELS,
+  LIMITS_NOTE,
+  SYMPTOM_LABELS,
+  type Case,
+} from "../types";
 import { GradeScale } from "../components/case/GradeScale";
 import { HeatmapViewer } from "../components/case/HeatmapViewer";
 import { ProbabilitiesBars } from "../components/case/ProbabilitiesBars";
@@ -12,6 +19,14 @@ import { ReviewModal } from "../components/case/ReviewModal";
 import { TriageBadge } from "../components/case/TriageBadge";
 import { PassportPanel } from "../components/passport/PassportPanel";
 import { Spinner } from "../components/ui/Spinner";
+
+const FOLLOWUP_LABEL = {
+  emergency_assessment: "Emergency eye assessment (same day)",
+  referral: "Ophthalmology referral",
+  rescreen: "Rescreening",
+  retake: "Image retake",
+  clinician_review: "Clinician review",
+} as const;
 
 export default function CaseResultPage() {
   const { id } = useParams<{ id: string }>();
@@ -77,6 +92,7 @@ export default function CaseResultPage() {
           </h1>
           <p className="mt-0.5 truncate text-xs text-slate-500">
             {caseData.patient_ref ? `${caseData.patient_ref} · ` : ""}
+            {EYE_LABELS[caseData.eye ?? "unknown"]} ·{" "}
             {new Date(caseData.created_at).toLocaleString()} · {caseData.model_version} ·{" "}
             {caseData.processing_ms} ms
           </p>
@@ -111,7 +127,65 @@ export default function CaseResultPage() {
         </div>
 
         <div className="space-y-4 lg:col-span-5">
+          {caseData.symptoms?.reported && caseData.symptoms.reported.length > 0 && (
+            <div className="rounded-3xl bg-red-50 p-5 ring-1 ring-red-200">
+              <p className="text-sm font-semibold text-red-900">Urgent symptoms reported</p>
+              <p className="mt-1 text-xs text-red-800">
+                {caseData.symptoms.reported.map((s) => SYMPTOM_LABELS[s]).join(", ")}. These override the AI
+                result: same-day eye assessment.
+              </p>
+            </div>
+          )}
+
           <TriageBadge triage={triage} />
+
+          {caseData.clinical_status && (
+            <div
+              className={`rounded-3xl p-5 ring-1 ${
+                caseData.clinical_status === "pending_review"
+                  ? "bg-amber-50 ring-amber-200"
+                  : caseData.clinical_status === "not_required"
+                    ? "bg-slate-50 ring-slate-200"
+                    : "bg-emerald-50 ring-emerald-200"
+              }`}
+            >
+              <p className="text-[11px] font-semibold tracking-widest text-slate-500 uppercase">Clinical status</p>
+              <p className="mt-1 text-sm font-semibold text-slate-800">
+                {CLINICAL_STATUS_LABELS[caseData.clinical_status]}
+              </p>
+              {caseData.clinical_status === "pending_review" && (
+                <p className="mt-1 text-xs text-amber-900">
+                  Provisional AI recommendation — pending clinician review.
+                </p>
+              )}
+              {caseData.clinical_status === "modified" && triage.ai_triage?.label && (
+                <p className="mt-1 text-xs text-slate-600">
+                  Original AI suggestion: {triage.ai_triage.label} (kept in the audit log).
+                </p>
+              )}
+            </div>
+          )}
+
+          {caseData.followup && (
+            <div className="rounded-3xl bg-white/75 p-5 shadow-xs ring-1 ring-slate-200/80 backdrop-blur-sm">
+              <p className="text-[11px] font-semibold tracking-widest text-slate-400 uppercase">
+                Follow-up
+              </p>
+              <p className="mt-2 text-sm text-slate-700">
+                <span className="font-semibold">{FOLLOWUP_LABEL[caseData.followup.type]}</span>{" "}
+                due {new Date(caseData.followup.due_date).toLocaleDateString()} ·{" "}
+                <span className={caseData.followup.overdue ? "font-semibold text-red-600" : ""}>
+                  {caseData.followup.overdue ? "overdue" : caseData.followup.status}
+                </span>
+              </p>
+              <Link
+                to="/followups"
+                className="mt-1.5 inline-block text-xs font-semibold text-teal-700 underline underline-offset-2"
+              >
+                Open follow-up tracking
+              </Link>
+            </div>
+          )}
 
           {prediction ? (
             <>
@@ -121,6 +195,11 @@ export default function CaseResultPage() {
           ) : (
             <RetakeCard quality={quality} />
           )}
+
+          <div className="rounded-3xl bg-white/60 p-4 text-[11px] leading-relaxed text-slate-500 ring-1 ring-slate-200/80">
+            <p>{LIMITS_NOTE}</p>
+            <p className="mt-1.5 font-semibold text-red-800">{EMERGENCY_NOTE}</p>
+          </div>
 
           {review.note && (
             <div className="rounded-3xl bg-white/75 p-5 shadow-xs ring-1 ring-slate-200/80 backdrop-blur-sm">

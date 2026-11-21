@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import {
   getFollowups,
+  lastReminder,
   remindFollowup,
   resetFollowupOverrides,
   updateFollowup,
@@ -26,12 +27,18 @@ const inDays = (n: number) => new Date(Date.now() + n * DAY).toISOString();
 const STATUS_PILL: Record<FollowupStatus, string> = {
   pending: "bg-slate-100 text-slate-600 ring-slate-200",
   scheduled: "bg-teal-50 text-teal-700 ring-teal-200",
+  unconfirmed: "bg-amber-50 text-amber-800 ring-amber-200",
   attended: "bg-triage-routine/10 text-triage-routine ring-triage-routine/25",
   missed: "bg-triage-urgent/10 text-triage-urgent ring-triage-urgent/30",
   cancelled: "bg-slate-100 text-slate-400 ring-slate-200 line-through",
 };
 
+const STATUS_TEXT: Partial<Record<FollowupStatus, string>> = {
+  unconfirmed: "attendance unconfirmed",
+};
+
 const TYPE_LABEL: Record<FollowupType, string> = {
+  emergency_assessment: "emergency",
   referral: "referral",
   rescreen: "rescreen",
   retake: "retake",
@@ -99,6 +106,10 @@ export default function FollowupsPage() {
       if (updated) {
         replace(updated);
         push(msg, "success");
+        // Show the SMS text the backend wrote in the patient's language.
+        if (lastReminder && lastReminder.followup.followup_id === updated.followup_id) {
+          push(`[${lastReminder.language.toUpperCase()}] ${lastReminder.message}`, "info");
+        }
       }
     } catch (e) {
       push(e instanceof Error ? e.message : "Update failed", "error");
@@ -116,6 +127,7 @@ export default function FollowupsPage() {
       ).length,
       overdue: list.filter((f) => f.overdue).length,
       missed: list.filter((f) => f.status === "missed").length,
+      unconfirmed: list.filter((f) => f.status === "unconfirmed").length,
       attended: list.filter((f) => f.status === "attended").length,
     };
   }, [items]);
@@ -166,12 +178,13 @@ export default function FollowupsPage() {
       {items && (
         <>
           {/* KPI strip */}
-          <div className="mt-5 grid grid-cols-2 gap-2 md:grid-cols-5">
+          <div className="mt-5 grid grid-cols-2 gap-2 md:grid-cols-6">
             {[
               { icon: CalendarClock, label: "awaiting scheduling", value: stats.pending, cls: "text-slate-900" },
               { icon: CalendarCheck2, label: "upcoming 7 days", value: stats.upcoming, cls: "text-teal-700" },
               { icon: Siren, label: "overdue", value: stats.overdue, cls: "text-triage-review" },
-              { icon: Siren, label: "missed", value: stats.missed, cls: "text-triage-urgent" },
+              { icon: CalendarClock, label: "attendance unconfirmed", value: stats.unconfirmed, cls: "text-amber-700" },
+              { icon: Siren, label: "missed (confirmed)", value: stats.missed, cls: "text-triage-urgent" },
               { icon: CircleCheck, label: "attended", value: stats.attended, cls: "text-triage-routine" },
             ].map(({ icon: Icon, label, value, cls }) => (
               <div
@@ -247,7 +260,7 @@ export default function FollowupsPage() {
                         <span
                           className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ${STATUS_PILL[f.status]}`}
                         >
-                          {f.status}
+                          {STATUS_TEXT[f.status] ?? f.status}
                         </span>
                         {f.reminders_sent > 0 && (
                           <span className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] text-slate-400">
@@ -275,7 +288,7 @@ export default function FollowupsPage() {
                               }
                             />
                           )}
-                          {f.status === "scheduled" && (
+                          {(f.status === "scheduled" || f.status === "unconfirmed") && (
                             <>
                               <ActionButton
                                 label="Attended"
@@ -309,7 +322,7 @@ export default function FollowupsPage() {
                                 void act(
                                   f,
                                   () => remindFollowup(f.followup_id),
-                                  "SMS reminder sent",
+                                  "Reminder logged (simulated SMS, nothing is sent)",
                                 )
                               }
                             />

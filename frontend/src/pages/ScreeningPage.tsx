@@ -4,19 +4,31 @@ import { analyzeSample, getSamples } from "../api/samples";
 import { useToast } from "../components/ui/ToastProvider";
 import { Spinner } from "../components/ui/Spinner";
 import { UploadCard } from "../components/screening/UploadCard";
+import {
+  INITIAL_CONTEXT,
+  ScreeningContextCard,
+  toApiContext,
+  type ContextState,
+} from "../components/screening/ScreeningContextCard";
 import type { Sample } from "../types";
 
 export default function ScreeningPage() {
   const [samples, setSamples] = useState<Sample[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [ctx, setCtx] = useState<ContextState>(INITIAL_CONTEXT);
   const navigate = useNavigate();
   const { push } = useToast();
 
   async function run(s: Sample) {
+    const apiCtx = toApiContext(ctx);
+    if (!apiCtx) {
+      push("Select at least one urgent symptom, or choose 'None reported' / 'Not asked'", "error");
+      return;
+    }
     setBusyId(s.id);
     try {
-      const c = await analyzeSample(s.id);
+      const c = await analyzeSample(s.id, undefined, apiCtx);
       navigate(`/case/${c.case_id}`);
     } catch (e) {
       push(e instanceof Error ? e.message : "Analysis failed", "error");
@@ -43,7 +55,11 @@ export default function ScreeningPage() {
       {error && <p className="mt-4 text-sm text-red-600">{error}</p>}
 
       <div className="mt-6">
-        <UploadCard />
+        <ScreeningContextCard value={ctx} onChange={setCtx} disabled={busyId !== null} />
+      </div>
+
+      <div className="mt-4">
+        <UploadCard context={() => toApiContext(ctx)} />
       </div>
 
       {!samples && !error && <p className="mt-4 text-sm text-slate-500">Loading samples...</p>}

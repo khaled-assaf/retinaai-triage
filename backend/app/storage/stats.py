@@ -4,8 +4,8 @@ from __future__ import annotations
 from .db import connect
 from .followups import list_followups
 
-TRIAGE_KEYS = ("urgent", "review", "referable", "retake", "routine")
-STATUS_KEYS = ("pending", "scheduled", "attended", "missed", "cancelled")
+TRIAGE_KEYS = ("emergency", "urgent", "review", "referable", "retake", "routine")
+STATUS_KEYS = ("pending", "scheduled", "unconfirmed", "attended", "missed", "cancelled")
 
 
 def dashboard() -> dict:
@@ -51,7 +51,7 @@ def dashboard() -> dict:
             "screenings": n_cases,
             "pending_review": pending_review,
             "open_referrals": sum(
-                1 for f in items if f["type"] == "referral" and f["status"] in ("pending", "scheduled", "missed")
+                1 for f in items if f["type"] == "referral" and f["status"] in ("pending", "scheduled", "unconfirmed", "missed")
             ),
         },
         "triage": {k: triage.get(k, 0) for k in TRIAGE_KEYS},

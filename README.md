@@ -14,15 +14,25 @@ tracks the referral until the patient is actually seen.
 | # | Feature | Where |
 |---|---|---|
 | 1 | **AI screening**: DR grade 0–4 + probabilities + Grad-CAM heatmap | `ml/inference.py` (mock now, real model from the AI teammate) |
-| 2 | **Smart quality check**: blur / exposure / framing, plus *uncertain prediction* detection with a human-readable reason | `services/quality.py`, `services/triage.py` |
+| 2 | **TrustGate**: image quality, AI uncertainty, urgent-symptom screening. When any of these fails, the system asks for human assessment instead of reassuring. See [`docs/CLINICAL_SAFETY.md`](docs/CLINICAL_SAFETY.md) | `services/quality.py`, `services/triage.py`, `reports/content.py` |
 | 3 | **European Retina Passport**: one-page PDF report in 6 languages (EN, RO, DE, FR, ES, IT), with a shareable expiring link and a QR code | `reports/` |
-| 4 | **Smart triage**: urgent > review > referable > retake > routine; a clinician's grade overrides the AI | `services/triage.py` |
+| 4 | **Smart triage**: emergency > urgent > review > referable > retake > routine. Experimental safety flags send likely-missed disease to clinician review. A clinician's decision supersedes the AI, and both are kept in an audit log | `services/triage.py` |
 | 5 | **Follow-up tracking**: every case gets a referral, rescreen, retake or review task with a due date; tracks overdue items, missed appointments and simulated reminders in the patient's language | `storage/followups.py` |
 | + | **Dashboard**: totals, triage mix, attendance rate, per-country and per-month stats | `GET /api/dashboard` |
 
 On first start the backend seeds **30 simulated patients in 12 European countries** with about 50
 screenings over the last 18 months and realistic follow-up outcomes (attended, missed, overdue,
 booked). This gives the dashboard and queue something to show from the first minute.
+
+## Limitations (state these in every demo)
+
+1. Training data are limited to APTOS; generalizability to other populations and cameras is unknown.
+2. No independent external or prospective clinical validation.
+3. Image gradability assessment and model confidence are not clinically validated.
+4. The system cannot reliably rule out diabetic macular edema or other eye diseases; additional
+   examination or OCT may be needed.
+5. Moderate/severe classification errors and missed referable cases remain. This is a research
+   prototype, not an approved clinical diagnostic system.
 
 ## Team & folders
 
@@ -54,6 +64,7 @@ retinaai-triage/
     │   │   ├── triage.py       triage + follow-up rules (data at the top)
     │   │   └── pipeline.py     decode -> quality -> predict + gradcam -> triage -> save -> follow-up
     │   ├── ml/inference.py     MODEL INTERFACE: load_model / predict / gradcam (+ mock)
+    │   ├── ml/real_model.py    the AI teammate's EfficientNet-B0 code (unchanged copy)
     │   ├── reports/
     │   │   ├── i18n.py         translations (6 languages)
     │   │   ├── pdf.py          European Retina Passport PDF (ReportLab)
@@ -61,7 +72,8 @@ retinaai-triage/
     │   └── storage/            SQLite (stdlib): db.py (cases), patients.py, followups.py,
     │                           shares.py, stats.py. Files under backend/storage_data/
     ├── samples/                5 synthetic demo images + samples.json
-    └── tests/                  pytest (58 tests)
+    ├── scripts/                make_test_checkpoint.py (stand-in weights), setup_real_samples.py (local APTOS demo images)
+    └── tests/                  pytest (99 tests; real-model tests skip without torch)
 ```
 
 ## Run the backend
@@ -90,15 +102,36 @@ Tests: `cd backend && pytest`. Docker: `cd backend && docker build -t retinaai-b
 
 See [`frontend/README.md`](frontend/README.md). Vite dev server on :5173, proxying `/api` to `http://localhost:8000`.
 
-## Plugging in the real model (AI teammate)
+## The AI model
 
-1. Implement the TODOs in [`backend/app/ml/inference.py`](backend/app/ml/inference.py)
-   (`load_model`, `_preprocess`, `_real_predict` and `_real_gradcam`). **Preprocessing must
-   match what the checkpoint was trained with.**
-2. `pip install -r requirements-ml.txt`
-3. Put the weights at `backend/models/model.pth` (gitignored), or set `MODEL_WEIGHTS_PATH`.
-4. Set `USE_MOCK_MODEL=false` in `backend/.env` and restart. `/api/health` should show
-   `"mock": false`.
+The real model is the AI teammate's **EfficientNet-B0** (APTOS 2019, validation QWK 0.893,
+referable AUC 0.98). Its model card, metrics and limitations are in
+[`ai/BACKEND_HANDOFF.md`](ai/BACKEND_HANDOFF.md). Her inference code is integrated **unchanged** as
+[`backend/app/ml/real_model.py`](backend/app/ml/real_model.py); a test keeps it identical to `ai/inference.py`.
+
+**Switch from mock to the real model:**
+```bash
+cd backend && source .venv/bin/activate
+pip install -r requirements-ml.txt --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
+cp ~/Downloads/model_inference.pt models/          # weights come via Drive/Release, never git
+echo "USE_MOCK_MODEL=false" >> .env
+rm -rf storage_data                                # re-grade the demo data with the real model
+uvicorn app.main:app --reload --port 8000          # /api/health -> "mock": false
+```
+
+If the weights are missing or fail to load, the server logs the error and **falls back to the
+mock** (`/api/health` shows `"mock": true`).
+
+**Real demo images (local only).** The 5 APTOS demo images (one per grade) aren't in git,
+because the licence for public display isn't confirmed. Build them from the AI teammate's zip:
+`python scripts/setup_real_samples.py` creates `backend/samples_real/` (gitignored). Then set
+`SAMPLES_DIR=samples_real` in `backend/.env`, delete `storage_data/` and restart.
+
+**No weights yet?** `python scripts/make_test_checkpoint.py` builds a stand-in checkpoint in the same
+format with **random** weights (`models/test_random_weights.pt`), so you can test the real-model path.
+Point `MODEL_WEIGHTS_PATH` at it. Its predictions are meaningless.
+
+Speed on a laptop CPU: about 30 ms to predict and 55 ms for Grad-CAM per image.
 
 ## Medical teammate
 
@@ -119,7 +152,8 @@ See [`frontend/README.md`](frontend/README.md). Vite dev server on :5173, proxyi
 | `MAX_UPLOAD_MB` | `10` | larger uploads → 413 |
 | `STORAGE_DIR` | `backend/storage_data` | case images, heatmaps, thumbnails |
 | `DB_PATH` | `$STORAGE_DIR/retinaai.db` | SQLite file |
-| `MODEL_WEIGHTS_PATH` | `backend/models/model.pth` | checkpoint for the real model |
+| `MODEL_WEIGHTS_PATH` | `backend/models/model_inference.pt` | checkpoint for the real model |
+| `MODEL_VERSION` | `effb0-v0.1-baseline` | stored on every case graded by the real model |
 | `SEED_DEMO_CASES` | `true` | seed simulated data into an empty DB |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | allowed browser origins |
 | `PUBLIC_BASE_URL` | `http://localhost:8000` | base of the public passport links and QR codes |

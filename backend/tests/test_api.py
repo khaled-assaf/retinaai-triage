@@ -1,5 +1,4 @@
 import cv2
-import numpy as np
 
 from app.config import get_settings
 from app.services.triage import URGENCY_ORDER
@@ -8,6 +7,7 @@ from conftest import SAMPLES
 CASE_KEYS = {
     "case_id", "created_at", "patient_ref", "quality", "prediction", "heatmap_url", "image_url",
     "triage", "review", "model_version", "processing_ms", "disclaimer", "report_url", "followup",
+    "eye", "symptoms", "clinical_status",
 }
 
 
@@ -40,7 +40,9 @@ def test_analyze_upload_full_case(client):
     assert abs(sum(p["probabilities"]) - 1) < 1e-3
     assert p["confidence"] == max(p["probabilities"])
     assert case["triage"]["level"] in URGENCY_ORDER
-    assert case["review"] == {"status": "pending", "clinician_grade": None, "note": None}
+    assert case["review"] == {"status": "pending", "clinician_grade": None, "note": None, "reviewed_at": None}
+    assert case["clinical_status"] == "pending_review"  # AI suggestion is provisional
+    assert case["eye"] == "unknown" and case["symptoms"] == {"collected": False, "reported": []}
     assert case["disclaimer"].startswith("Research prototype")
     for key in ("image_url", "heatmap_url"):
         img = client.get(case[key])
@@ -108,14 +110,18 @@ def test_queue_sorted_and_light(client):
     ranks = [URGENCY_ORDER.index(c["triage_level"]) for c in queue]
     assert ranks == sorted(ranks)
     levels = {c["triage_level"] for c in queue}
-    assert levels == set(URGENCY_ORDER), levels  # seed covers every level
+    assert levels >= set(URGENCY_ORDER) - {"emergency"}, levels  # seed covers every AI level
     for c in queue:
         assert c["thumbnail_url"].endswith("/thumbnail")
         assert not any(isinstance(v, str) and len(v) > 300 for v in c.values())  # no base64
-    # newest first within the same level
+    # within a level: priority reviews first, then newest first
     for level in URGENCY_ORDER:
-        dates = [c["created_at"] for c in queue if c["triage_level"] == level]
-        assert dates == sorted(dates, reverse=True)
+        rows = [c for c in queue if c["triage_level"] == level]
+        prio = [c["review_priority"] == "priority" for c in rows]
+        assert prio == sorted(prio, reverse=True)
+        for flag in (True, False):
+            dates = [c["created_at"] for c in rows if (c["review_priority"] == "priority") == flag]
+            assert dates == sorted(dates, reverse=True)
 
 
 def test_case_404(client):
@@ -127,7 +133,10 @@ def test_patch_review(client):
     cid = client.post("/api/samples/severe/analyze").json()["case_id"]
     r = client.patch(f"/api/cases/{cid}", json={"status": "reviewed", "clinician_grade": 4, "note": "PDR, refer today"})
     assert r.status_code == 200
-    assert r.json()["review"] == {"status": "reviewed", "clinician_grade": 4, "note": "PDR, refer today"}
+    review = r.json()["review"]
+    assert {k: review[k] for k in ("status", "clinician_grade", "note")} == {
+        "status": "reviewed", "clinician_grade": 4, "note": "PDR, refer today"}
+    assert review["reviewed_at"]
     assert client.get(f"/api/cases/{cid}").json()["review"]["status"] == "reviewed"
     reviewed = client.get("/api/queue?status=reviewed").json()
     assert cid in {c["case_id"] for c in reviewed}

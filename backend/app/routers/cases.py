@@ -3,7 +3,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from ..schemas import Case, CaseSummary, ReviewUpdate
+from ..schemas import AuditEvent, Case, CaseSummary, ReviewUpdate
 from ..services import pipeline
 from ..storage import db
 
@@ -15,7 +15,8 @@ def queue(
     status: Optional[Literal["pending", "reviewed"]] = Query(None, description="Filter by review status"),
     limit: int = Query(200, ge=1, le=1000),
 ):
-    """Case summaries sorted by urgency (urgent > review > referable > retake > routine), then newest first."""
+    """Case summaries sorted by urgency (emergency > urgent > review [priority first] > referable > retake
+    > routine), then newest first."""
     return db.list_queue(review_status=status, limit=limit)
 
 
@@ -35,6 +36,14 @@ def review_case(case_id: str, body: ReviewUpdate):
     if not case:
         raise HTTPException(404, "Case not found")
     return case
+
+
+@router.get("/cases/{case_id}/audit", response_model=list[AuditEvent])
+def case_audit(case_id: str):
+    """Audit trail: the original AI result, then every clinician review/override (with reason)."""
+    if not db.get_case(case_id):
+        raise HTTPException(404, "Case not found")
+    return db.get_audit(case_id)
 
 
 def _serve(case_id: str, kind: str) -> FileResponse:

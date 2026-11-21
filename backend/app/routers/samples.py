@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 
 from ..config import get_settings
 from ..schemas import Case, Sample
-from .analyze import run_pipeline
+from .analyze import EYE_HELP, SYMPTOMS_HELP, run_pipeline
 
 router = APIRouter(tags=["samples"])
 
@@ -56,7 +56,9 @@ def analyze_sample(
     request: Request,
     sample_id: str,
     patient_ref: Optional[str] = Query(None, max_length=100),
+    eye: str = Query("unknown", description=EYE_HELP),
+    symptoms: Optional[str] = Query(None, description=SYMPTOMS_HELP),
 ):
     """Run the full pipeline on a demo image (one click from the sample tray)."""
     data = sample_path(sample_id).read_bytes()
-    return run_pipeline(request, data, patient_ref or f"SAMPLE-{sample_id}")
+    return run_pipeline(request, data, patient_ref or f"SAMPLE-{sample_id}", eye, symptoms)

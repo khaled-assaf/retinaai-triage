@@ -1,26 +1,11 @@
 import { useEffect, useState } from "react";
-import { pdf } from "@react-pdf/renderer";
 import QRCode from "qrcode";
-import { Download, Loader2, X } from "lucide-react";
-import type { Case } from "../../types";
+import { Copy, ExternalLink, Link2, X } from "lucide-react";
+import { api } from "../../api/client";
+import { roundTo100 } from "../../utils/scores";
+import type { Case, ShareLink } from "../../types";
 import { PASSPORT_LANGUAGES, PASSPORT_STRINGS, type PassportLang } from "../../i18n/passport";
-import { PassportDocument } from "../../pdf/PassportDocument";
 import { useToast } from "../ui/ToastProvider";
-
-/** Fetch any URL as a dataURL (for embedding images in the PDF). */
-async function toDataUrl(url: string): Promise<string | null> {
-  try {
-    const blob = await (await fetch(url)).blob();
-    return await new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.onerror = () => resolve(null);
-      reader.readAsDataURL(blob);
-    });
-  } catch {
-    return null;
-  }
-}
 
 interface Props {
   caseData: Case;
@@ -30,11 +15,35 @@ interface Props {
 export function PassportPanel({ caseData, onClose }: Props) {
   const [lang, setLang] = useState<PassportLang>("en");
   const [qr, setQr] = useState<string | null>(null);
-  const [fundus, setFundus] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [share, setShare] = useState<ShareLink | null>(null);
   const { push } = useToast();
 
+  /** Official passport, rendered by the backend (6 languages, history, follow-up, safety notes). */
+  const serverPdfUrl = `${caseData.report_url ?? `/api/cases/${caseData.case_id}/report.pdf`}?lang=${lang}`;
+
+  async function createShareLink() {
+    try {
+      const link = await api<ShareLink>(
+        `/api/cases/${encodeURIComponent(caseData.case_id)}/share?lang=${lang}`,
+        { method: "POST" },
+      );
+      setShare(link);
+      // From now on the QR (preview + browser PDF) points to the public passport link.
+      setQr(
+        await QRCode.toDataURL(link.passport_url, {
+          margin: 1,
+          width: 160,
+          color: { dark: "#0f172a", light: "#ffffff" },
+        }),
+      );
+      push("Share link created", "success");
+    } catch (e) {
+      push(e instanceof Error ? e.message : "Could not create the share link", "error");
+    }
+  }
+
   useEffect(() => {
+    setShare(null);
     QRCode.toDataURL(`${window.location.origin}/case/${caseData.case_id}`, {
       margin: 1,
       width: 160,
@@ -42,30 +51,7 @@ export function PassportPanel({ caseData, onClose }: Props) {
     })
       .then(setQr)
       .catch(() => push("Could not generate the QR code", "error"));
-    toDataUrl(caseData.image_url).then(setFundus);
   }, [caseData, push]);
-
-  async function download() {
-    if (!qr || busy) return;
-    setBusy(true);
-    try {
-      const blob = await pdf(
-        <PassportDocument caseData={caseData} lang={lang} qrDataUrl={qr} fundusDataUrl={fundus} />,
-      ).toBlob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `retina-passport-${caseData.case_id}-${lang}.pdf`;
-      a.click();
-      // Revoke late — revoking immediately can cancel the download in some browsers
-      setTimeout(() => URL.revokeObjectURL(url), 10_000);
-      push("Passport PDF downloaded", "success");
-    } catch (e) {
-      push(e instanceof Error ? e.message : "PDF generation failed", "error");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   const t = PASSPORT_STRINGS[lang];
   const { prediction, triage } = caseData;
@@ -73,7 +59,7 @@ export function PassportPanel({ caseData, onClose }: Props) {
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-slate-950/40 p-4 backdrop-blur-sm"
-      onClick={busy ? undefined : onClose}
+      onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="European Retina Passport"
@@ -92,7 +78,6 @@ export function PassportPanel({ caseData, onClose }: Props) {
           <button
             type="button"
             onClick={onClose}
-            disabled={busy}
             aria-label="Close"
             className="grid size-8 place-items-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-600"
           >
@@ -141,7 +126,7 @@ export function PassportPanel({ caseData, onClose }: Props) {
                 <p className="mt-0.5 text-sm font-semibold text-slate-900">
                   {prediction.grade} — {t.severityLabels[prediction.grade]}{" "}
                   <span className="font-normal text-slate-400">
-                    ({t.confidence} {(prediction.confidence * 100).toFixed(0)}%)
+                    (AI model score {Math.max(...roundTo100(prediction.probabilities))}%)
                   </span>
                 </p>
               ) : (
@@ -160,24 +145,53 @@ export function PassportPanel({ caseData, onClose }: Props) {
           </div>
         </div>
 
-        <div className="mt-5 flex justify-end gap-2">
+        {share && (
+          <div className="mt-4 flex items-center gap-2 rounded-xl bg-teal-50 px-3 py-2 ring-1 ring-teal-200">
+            <Link2 className="size-3.5 shrink-0 text-teal-700" />
+            <a
+              href={share.passport_url}
+              target="_blank"
+              rel="noreferrer"
+              className="min-w-0 flex-1 truncate font-mono text-[11px] text-teal-800 underline"
+            >
+              {share.passport_url}
+            </a>
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(share.passport_url).then(() => push("Link copied", "success"))}
+              aria-label="Copy link"
+              className="grid size-7 place-items-center rounded-full text-teal-700 hover:bg-teal-100"
+            >
+              <Copy className="size-3.5" />
+            </button>
+          </div>
+        )}
+
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
           <button
             type="button"
             onClick={onClose}
-            disabled={busy}
             className="rounded-full px-4 py-2 text-xs font-semibold text-slate-500 transition hover:bg-slate-100"
           >
             Close
           </button>
           <button
             type="button"
-            onClick={() => void download()}
-            disabled={busy || !qr}
-            className="inline-flex items-center gap-2 rounded-full bg-teal-700 px-5 py-2 text-xs font-semibold text-white shadow-md shadow-teal-700/15 transition hover:bg-teal-800 disabled:opacity-60"
+            onClick={() => void createShareLink()}
+            className="inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs font-semibold text-teal-800 ring-1 ring-teal-300 transition hover:bg-teal-50"
           >
-            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
-            {busy ? "Generating PDF…" : "Download PDF"}
+            <Link2 className="size-3.5" />
+            Share link
           </button>
+          <a
+            href={serverPdfUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 rounded-full bg-teal-700 px-5 py-2 text-xs font-semibold text-white shadow-md shadow-teal-700/15 transition hover:bg-teal-800"
+          >
+            <ExternalLink className="size-3.5" />
+            Open passport PDF
+          </a>
         </div>
       </div>
     </div>

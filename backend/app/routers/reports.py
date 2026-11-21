@@ -16,6 +16,8 @@ LangQuery = Query(None, description="Report language (en, ro, de, fr, es, it). D
 
 
 def _render(case_id: str, lang: Optional[str], share: Optional[dict] = None) -> tuple[bytes, str]:
+    """Render a case's passport. Via a share token (`share`) it is the PUBLIC copy:
+    name and year of birth are hidden, so the unrestricted link exposes no direct identifiers."""
     case = pipeline.full_case(case_id)
     if not case:
         raise HTTPException(404, "Case not found")
@@ -34,6 +36,8 @@ def _render(case_id: str, lang: Optional[str], share: Optional[dict] = None) -> 
         image_path=image[0] if image else None,
         heatmap_path=heatmap[0] if heatmap else None,
         lang=language,
+        confidence_threshold=get_settings().confidence_threshold,
+        public=share is not None,
         share_url=share_url,
         share_expires_at=share["expires_at"] if share else None,
     )
@@ -74,7 +78,8 @@ def share_case(case_id: str, lang: Optional[str] = LangQuery):
 @router.get("/passport/{token}", response_class=Response,
             responses={200: {"content": {"application/pdf": {}}}})
 def passport_by_token(token: str, lang: Optional[str] = Query(None, description="Override the shared language")):
-    """Public passport link (no login): the PDF, including a QR code pointing back to this link."""
+    """Public passport link (no login, expiring token): a pseudonymised PDF (no name or year of
+    birth) with a QR code pointing back to this link."""
     share = shares.get_valid_share(token)
     if not share:
         raise HTTPException(404, "Passport link not found or expired")

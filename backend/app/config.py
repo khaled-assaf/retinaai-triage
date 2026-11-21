@@ -57,7 +57,8 @@ class Settings:
 
 @lru_cache
 def get_settings() -> Settings:
-    _load_dotenv(BACKEND_DIR / ".env")
+    if not _bool("RETINAAI_IGNORE_DOTENV", False):  # tests set this: never depend on a local .env
+        _load_dotenv(BACKEND_DIR / ".env")
     storage_dir = _path("STORAGE_DIR", BACKEND_DIR / "storage_data")
     return Settings(
         use_mock_model=_bool("USE_MOCK_MODEL", True),
@@ -65,7 +66,7 @@ def get_settings() -> Settings:
         max_upload_mb=float(os.getenv("MAX_UPLOAD_MB", "10")),
         storage_dir=storage_dir,
         db_path=_path("DB_PATH", storage_dir / "retinaai.db"),
-        model_weights_path=_path("MODEL_WEIGHTS_PATH", BACKEND_DIR / "models" / "model.pth"),
+        model_weights_path=_path("MODEL_WEIGHTS_PATH", BACKEND_DIR / "models" / "model_inference.pt"),
         samples_dir=_path("SAMPLES_DIR", BACKEND_DIR / "samples"),
         seed_demo_cases=_bool("SEED_DEMO_CASES", True),
         cors_origins=[

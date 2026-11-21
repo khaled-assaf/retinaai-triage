@@ -6,9 +6,10 @@ import type { CaseSummary, ReviewStatus, TriageLevel } from "../types";
 import { Spinner } from "../components/ui/Spinner";
 import { timeAgo } from "../utils/time";
 
-const LEVELS: TriageLevel[] = ["urgent", "review", "referable", "retake", "routine"];
+const LEVELS: TriageLevel[] = ["emergency", "urgent", "review", "referable", "retake", "routine"];
 
 const LEVEL_CHIP: Record<TriageLevel, string> = {
+  emergency: "bg-triage-emergency/10 text-triage-emergency ring-triage-emergency/30",
   urgent: "bg-triage-urgent/10 text-triage-urgent ring-triage-urgent/30",
   review: "bg-triage-review/10 text-triage-review ring-triage-review/30",
   referable: "bg-triage-referable/10 text-triage-referable ring-triage-referable/30",
@@ -18,6 +19,7 @@ const LEVEL_CHIP: Record<TriageLevel, string> = {
 
 /* Full static class names so Tailwind's scanner sees them */
 const LEVEL_TEXT: Record<TriageLevel, string> = {
+  emergency: "text-triage-emergency",
   urgent: "text-triage-urgent",
   review: "text-triage-review",
   referable: "text-triage-referable",
@@ -26,6 +28,7 @@ const LEVEL_TEXT: Record<TriageLevel, string> = {
 };
 
 const LEVEL_DOT: Record<TriageLevel, string> = {
+  emergency: "bg-triage-emergency",
   urgent: "bg-triage-urgent",
   review: "bg-triage-review",
   referable: "bg-triage-referable",

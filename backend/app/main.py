@@ -27,7 +27,7 @@ def load_model_once(settings):
         model = inference.load_model(settings.model_weights_path)
         log.info("Loaded real model from %s", settings.model_weights_path)
         return model
-    except Exceptiondisclaimer:
+    except Exception:
         log.exception("Failed to load real model; FALLING BACK TO MOCK (see /api/health)")
         return inference.load_mock_model()
 
