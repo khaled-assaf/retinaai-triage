@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.triage import TRIAGE_LEVELS, triage_case
+from app.services.triage import FOLLOW_UP_RULES, TRIAGE_LEVELS, triage_case, triage_from_clinician
 
 T = 0.6
 
@@ -46,5 +46,20 @@ def test_threshold_is_configurable():
 
 def test_result_shape():
     r = triage_case(True, confident(3), T)
-    assert r == {"level": "urgent", **TRIAGE_LEVELS["urgent"]}
+    assert {k: r[k] for k in ("level", "label", "action")} == {"level": "urgent", **TRIAGE_LEVELS["urgent"]}
     assert r["label"] == "Urgent referral"
+    assert r["source"] == "ai" and "confidence" in r["reason"]
+
+
+def test_review_reason_explains_uncertainty():
+    assert "below" in triage_case(True, pred(4, [0.1, 0.1, 0.1, 0.15, 0.55]), T)["reason"]
+    assert "apart" in triage_case(True, pred(2, [0.0, 0.0, 0.62, 0.50, 0.0]), T)["reason"]
+
+
+def test_clinician_override():
+    r = triage_from_clinician(2)
+    assert r["level"] == "referable" and r["source"] == "clinician"
+
+
+def test_every_level_has_followup_rule():
+    assert set(FOLLOW_UP_RULES) == set(TRIAGE_LEVELS)

@@ -7,7 +7,7 @@ from conftest import SAMPLES
 
 CASE_KEYS = {
     "case_id", "created_at", "patient_ref", "quality", "prediction", "heatmap_url", "image_url",
-    "triage", "review", "model_version", "processing_ms", "disclaimer",
+    "triage", "review", "model_version", "processing_ms", "disclaimer", "report_url", "followup",
 }
 
 
@@ -104,7 +104,7 @@ def test_missing_image_has_string_detail(client):
 
 def test_queue_sorted_and_light(client):
     queue = client.get("/api/queue").json()
-    assert len(queue) >= 8  # seeded demo cases
+    assert len(queue) >= 30  # seeded simulated cases
     ranks = [URGENCY_ORDER.index(c["triage_level"]) for c in queue]
     assert ranks == sorted(ranks)
     levels = {c["triage_level"] for c in queue}
@@ -114,8 +114,8 @@ def test_queue_sorted_and_light(client):
         assert not any(isinstance(v, str) and len(v) > 300 for v in c.values())  # no base64
     # newest first within the same level
     for level in URGENCY_ORDER:
-        ids = [int(c["case_id"][2:]) for c in queue if c["triage_level"] == level]
-        assert ids == sorted(ids, reverse=True)
+        dates = [c["created_at"] for c in queue if c["triage_level"] == level]
+        assert dates == sorted(dates, reverse=True)
 
 
 def test_case_404(client):

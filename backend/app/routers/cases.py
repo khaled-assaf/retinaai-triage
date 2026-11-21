@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from ..schemas import Case, CaseSummary, ReviewUpdate
+from ..services import pipeline
 from ..storage import db
 
 router = APIRouter(tags=["cases"])
@@ -20,7 +21,7 @@ def queue(
 
 @router.get("/cases/{case_id}", response_model=Case)
 def get_case(case_id: str):
-    case = db.get_case(case_id)
+    case = pipeline.full_case(case_id)
     if not case:
         raise HTTPException(404, "Case not found")
     return case
@@ -28,7 +29,9 @@ def get_case(case_id: str):
 
 @router.patch("/cases/{case_id}", response_model=Case)
 def review_case(case_id: str, body: ReviewUpdate):
-    case = db.update_review(case_id, body.status, body.clinician_grade, body.note)
+    """Clinician review. A clinician_grade overrides the AI triage (triage.source = "clinician")
+    and re-plans the case's follow-up if it is still pending."""
+    case = pipeline.review_case(case_id, body.status, body.clinician_grade, body.note)
     if not case:
         raise HTTPException(404, "Case not found")
     return case

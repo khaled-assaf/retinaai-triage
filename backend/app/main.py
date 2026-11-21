@@ -1,4 +1,4 @@
-"""RetinaAI Triage API. Run from backend/:  uvicorn app.main:app --reload"""
+"""RetinaAI Nexus API. Run from backend/:  uvicorn app.main:app --reload"""
 from __future__ import annotations
 
 import logging
@@ -10,25 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from . import seed
 from .config import get_settings
 from .ml import inference
-from .routers import analyze, cases, health, samples
-from .services.pipeline import analyze_image
+from .routers import analyze, cases, dashboard, followups, health, patients, reports, samples
 from .storage import db
 
 log = logging.getLogger("retinaai")
-
-# (sample id, patient_ref) pairs used to fill an empty DB so the queue isn't blank.
-DEMO_SEED = [
-    ("severe", "DEMO-001"),
-    ("normal", "DEMO-002"),
-    ("moderate", "DEMO-003"),
-    ("blurry", "DEMO-004"),
-    ("mild", "DEMO-005"),
-    ("normal", "DEMO-006"),
-    ("severe", "DEMO-007"),
-    ("moderate", "DEMO-008"),
-]
 
 
 def load_model_once(settings):
@@ -39,24 +27,9 @@ def load_model_once(settings):
         model = inference.load_model(settings.model_weights_path)
         log.info("Loaded real model from %s", settings.model_weights_path)
         return model
-    except Exception:
+    except Exceptiondisclaimer:
         log.exception("Failed to load real model; FALLING BACK TO MOCK (see /api/health)")
         return inference.load_mock_model()
-
-
-def seed_demo_cases(model, settings) -> int:
-    manifest = {s["id"]: s for s in samples.load_manifest()}
-    created = 0
-    for sample_id, patient_ref in DEMO_SEED:
-        entry = manifest.get(sample_id)
-        path = settings.samples_dir / entry["file"] if entry else None
-        if not path or not path.is_file():
-            continue
-        case = analyze_image(path.read_bytes(), patient_ref, model, settings.confidence_threshold)
-        created += 1
-        if patient_ref == "DEMO-006":  # show one already-reviewed case
-            db.update_review(case["case_id"], "reviewed", 0, "Agree with AI. Rescreen in 12 months.")
-    return created
 
 
 @asynccontextmanager
@@ -65,16 +38,21 @@ async def lifespan(app: FastAPI):
     app.state.model = load_model_once(settings)
     db.init_db()
     if settings.seed_demo_cases and db.count_cases() == 0:
-        n = seed_demo_cases(app.state.model, settings)
-        log.info("Seeded %d demo cases", n)
+        files = {s["id"]: settings.samples_dir / s["file"] for s in samples.load_manifest()}
+        n = seed.seed(app.state.model, settings, {k: v for k, v in files.items() if v.is_file()})
+        log.info("Seeded %d simulated screenings", n)
     yield
 
 
 settings = get_settings()
 app = FastAPI(
-    title="RetinaAI Triage API",
-    description="Research prototype for diabetic retinopathy screening. **Not for clinical diagnosis.**",
-    version="0.1.0",
+    title="RetinaAI Nexus API",
+    description=(
+        "From detection to action: AI retinal screening, smart quality check, European Retina "
+        "Passport (multilingual PDF), smart triage and follow-up tracking. "
+        "Research prototype with **simulated data**. **Not for clinical diagnosis.**"
+    ),
+    version="0.2.0",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -106,10 +84,11 @@ async def unhandled_error(_: Request, exc: Exception):
     return JSONResponse({"detail": "Internal server error"}, status_code=500)
 
 
-for r in (analyze.router, cases.router, samples.router, health.router):
+for r in (analyze.router, cases.router, reports.router, patients.router, followups.router,
+          dashboard.router, samples.router, health.router):
     app.include_router(r, prefix="/api")
 
 
 @app.get("/", include_in_schema=False)
 def root():
-    return {"name": "RetinaAI Triage API", "docs": "/docs", "health": "/api/health"}
+    return {"name": "RetinaAI Nexus API", "docs": "/docs", "health": "/api/health"}

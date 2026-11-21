@@ -169,7 +169,7 @@ def _encode_png_rgb(img_rgb: np.ndarray) -> bytes:
     return buf.tobytes()
 
 
-def _mock_gradcam(img_rgb: np.ndarray, max_width: int = 768) -> bytes:
+def _mock_gradcam(img_rgb: np.ndarray, max_width: int = 512) -> bytes:
     """Fake heatmap: one or two Gaussian blobs inside the retina, JET-coloured."""
     h, w = img_rgb.shape[:2]
     if w > max_width:

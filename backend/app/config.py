@@ -47,6 +47,8 @@ class Settings:
     samples_dir: Path
     seed_demo_cases: bool
     cors_origins: list[str]
+    public_base_url: str
+    share_days_valid: int
 
     @property
     def max_upload_bytes(self) -> int:
@@ -73,4 +75,6 @@ def get_settings() -> Settings:
             ).split(",")
             if o.strip()
         ],
+        public_base_url=os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/"),
+        share_days_valid=int(os.getenv("SHARE_DAYS_VALID", "30")),
     )

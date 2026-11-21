@@ -1,4 +1,4 @@
-# RetinaAI Triage API contract
+# RetinaAI Nexus API contract
 
 Base URL: `http://localhost:8000`. All endpoints live under `/api`.
 Live, interactive docs: **http://localhost:8000/docs** (generated from `backend/app/schemas.py`).
@@ -21,6 +21,19 @@ If you change the contract, update this file and `schemas.py` together.
 | GET | `/api/samples/{id}/image` | Demo image file |
 | POST | `/api/samples/{id}/analyze` | Run the pipeline on a demo image (one click) |
 | GET | `/api/health` | Server/model status |
+| GET | `/api/cases/{id}/report.pdf` | **European Retina Passport** PDF (`?lang=`, `?download=true`) |
+| POST | `/api/cases/{id}/share` | Create a public, expiring passport link (`?lang=`) |
+| GET | `/api/passport/{token}` | Public passport PDF via share token (includes QR code) |
+| GET | `/api/languages` | Supported report languages |
+| GET | `/api/patients` | Patients with latest screening + open follow-ups (`?country=`, `?q=`) |
+| POST | `/api/patients` | Create a patient |
+| GET | `/api/patients/{ref}` | Patient + all screenings + all follow-ups |
+| PATCH | `/api/patients/{ref}` | Update patient fields (e.g. preferred language) |
+| GET | `/api/followups` | Follow-up worklist, most urgent attention first |
+| GET | `/api/followups/{id}` | One follow-up |
+| PATCH | `/api/followups/{id}` | Book an appointment / mark attended, missed, cancelled |
+| POST | `/api/followups/{id}/remind` | Simulated SMS reminder in the patient's language |
+| GET | `/api/dashboard` | Stats for the follow-up / Europe dashboard |
 
 Image URLs in responses are **relative** (`/api/...`). With the Vite proxy you can use them
 directly in `<img src>`.
@@ -70,10 +83,38 @@ Response `200`: the **full case** object.
   },
   "heatmap_url": "/api/cases/c_0042/heatmap",
   "image_url": "/api/cases/c_0042/image",
-  "triage": { "level": "urgent", "label": "Urgent referral", "action": "Refer to ophthalmologist" },
+  "triage": {
+    "level": "urgent",
+    "label": "Urgent referral",
+    "action": "Refer to ophthalmologist",
+    "reason": "AI grade 3 with confidence 0.71",
+    "source": "ai"
+  },
   "review": { "status": "pending", "clinician_grade": null, "note": null },
   "model_version": "mock-v0",
   "processing_ms": 412,
+  "report_url": "/api/cases/c_0042/report.pdf",
+  "followup": {
+    "followup_id": "f_0042",
+    "case_id": "c_0042",
+    "patient_ref": "DEMO-007",
+    "patient_name": "Elena Popescu",
+    "country": "RO",
+    "language": "ro",
+    "triage_level": "urgent",
+    "type": "referral",
+    "status": "pending",
+    "due_date": "2026-12-05",
+    "days_until_due": 14,
+    "overdue": false,
+    "appointment_at": null,
+    "reminders_sent": 0,
+    "last_reminder_at": null,
+    "note": null,
+    "resolved_case_id": null,
+    "created_at": "2026-11-21T10:32:22Z",
+    "updated_at": "2026-11-21T10:32:22Z"
+  },
   "disclaimer": "Research prototype. Not for clinical diagnosis."
 }
 ```
@@ -108,6 +149,12 @@ Field values:
   `4 Proliferative DR`.
 - `prediction.confidence`: the probability of the predicted grade.
 - `triage.level`: `urgent` | `review` | `referable` | `retake` | `routine`.
+- `triage.reason`: why that level was chosen. For uncertain predictions it says why, e.g.
+  `"Uncertain: confidence 0.43 is below the 0.60 threshold"` or
+  `"Uncertain: top two grades are only 0.09 apart (minimum 0.15)"`.
+- `triage.source`: `"ai"`, or `"clinician"` after a clinician graded the case (see PATCH).
+- `followup`: the task this case created (see **Follow-ups** below).
+- `report_url`: the European Retina Passport PDF for this case.
 
 | level | label | when |
 |---|---|---|
@@ -116,6 +163,19 @@ Field values:
 | `routine` | Routine screening, rescreen in 12 months | grade 0-1 |
 | `referable` | Schedule specialist appointment | grade 2 |
 | `urgent` | Urgent referral | grade 3-4 |
+
+Every case automatically gets a follow-up (placeholder deadlines, to be confirmed by the medical teammate):
+
+| level | follow-up `type` | due in |
+|---|---|---|
+| `urgent` | `referral` | 14 days |
+| `review` | `clinician_review` | 2 days |
+| `referable` | `referral` | 90 days |
+| `retake` | `retake` | 7 days |
+| `routine` | `rescreen` | 365 days |
+
+When a patient gets a new screening, their open `rescreen` / `retake` follow-ups are closed
+automatically (`status: "attended"`, `resolved_case_id` = the new case).
 
 ---
 
@@ -173,6 +233,12 @@ Full case (same shape as `/analyze`). `404 {"detail": "Case not found"}`.
 
 Returns the updated full case. An out-of-range grade returns `422`.
 
+Side effects when `status` is `"reviewed"`:
+- the case's open `clinician_review` follow-up is marked `attended`;
+- if `clinician_grade` is set, triage is recomputed from that grade (`triage.source = "clinician"`,
+  so the case moves in the queue) and the matching follow-up is planned (e.g. grade 3 → urgent
+  `referral` due in 14 days).
+
 ### GET /api/samples
 
 ```json
@@ -204,14 +270,189 @@ curl -X POST http://localhost:8000/api/samples/severe/analyze
 { "status": "ok", "model_loaded": true, "mock": true, "model_version": "mock-v0" }
 ```
 
+---
+
+## European Retina Passport
+
+Languages (`GET /api/languages`): `en` English, `ro` Română, `de` Deutsch, `fr` Français,
+`es` Español, `it` Italiano. An unknown `lang` falls back to `en`. Without `lang`, the
+patient's preferred language is used.
+
+### GET /api/cases/{id}/report.pdf
+
+One-page A4 PDF containing:
+- patient details, screening details and image quality;
+- a colour-coded triage box with the recommended action and an uncertainty note;
+- the fundus photo next to the AI heatmap;
+- probability bars per grade;
+- follow-up, clinician review and screening history;
+- a "SIMULATED DATA" banner and the disclaimer.
+
+Opens inline in the browser; add `?download=true` to download.
+
+```html
+<a href="/api/cases/c_0042/report.pdf?lang=ro" target="_blank">Passport (RO)</a>
+<iframe src="/api/cases/c_0042/report.pdf" style="width:100%;height:80vh"></iframe>
+```
+
+### POST /api/cases/{id}/share?lang=de
+
+Creates a public link that needs no login and expires after `SHARE_DAYS_VALID` days (30 by default). The PDF served there
+carries a QR code pointing back to the link.
+
+```json
+{
+  "token": "dPOIECxNy_bEknDiY4whcQ",
+  "case_id": "c_0042",
+  "language": "de",
+  "expires_at": "2026-12-21T11:15:12Z",
+  "passport_url": "http://localhost:8000/api/passport/dPOIECxNy_bEknDiY4whcQ"
+}
+```
+
+`GET /api/passport/{token}` returns the PDF (`?lang=` overrides the language), or `404` if the
+token is unknown or expired.
+
+---
+
+## Patients
+
+All demo patients are **simulated** (`"simulated": true`). Uploading with a new `patient_ref`
+creates a minimal patient automatically.
+
+### GET /api/patients?country=RO&q=pop
+
+```json
+[
+  {
+    "patient_ref": "EU-RO-001",
+    "full_name": "Elena Popescu",
+    "birth_year": 1961,
+    "sex": "F",
+    "country": "RO",
+    "language": "ro",
+    "diabetes_type": "Type 2",
+    "phone": "+40 000 123 456",
+    "email": "elena.popescu@example.com",
+    "simulated": true,
+    "created_at": "2025-06-02T09:00:00Z",
+    "screenings": 2,
+    "last_case_id": "c_0031",
+    "last_screened_at": "2026-11-19T09:15:10Z",
+    "last_triage_level": "referable",
+    "open_followups": 1
+  }
+]
+```
+
+### POST /api/patients
+
+```json
+{ "patient_ref": "RO-123", "full_name": "Ana Ionescu", "birth_year": 1970, "sex": "F",
+  "country": "RO", "language": "ro", "diabetes_type": "Type 2" }
+```
+
+`201` → patient. `409` if it already exists; `400` for an unsupported language.
+
+### GET /api/patients/{ref}
+
+`{"patient": {...}, "cases": [CaseSummary, ... newest first], "followups": [Followup, ...]}`.
+This is the longitudinal view: every screening and every referral of one patient.
+
+### PATCH /api/patients/{ref}
+
+Any subset of the POST fields (except `patient_ref`).
+
+---
+
+## Follow-ups
+
+Status lifecycle:
+
+```
+pending ──book appointment──▶ scheduled ──▶ attended
+   │                              │
+   │                              └─ appointment passed by >24h, not marked attended ─▶ missed (automatic)
+   └──────────── any open status ─▶ cancelled
+```
+
+`overdue` (computed) = `status == "pending"` and past `due_date`. `days_until_due` is negative
+when overdue.
+
+### GET /api/followups
+
+Query params:
+- `status`
+- `type` (`referral`, `rescreen`, `retake` or `clinician_review`)
+- `patient_ref`
+- `overdue=true|false`
+- `open=true` (pending, scheduled or missed)
+- `limit`
+
+Sorted by what needs attention first: **missed → overdue → upcoming by due date → closed**.
+Each item has the shape of `case.followup` above, including `patient_name`, `country` and `language`
+for the worklist.
+
+### PATCH /api/followups/{id}
+
+```json
+{ "appointment_at": "2026-12-01T09:30:00Z" }          // books it -> "scheduled"
+{ "status": "attended" }                               // or "missed", "cancelled", "pending"
+{ "note": "Called patient, will come next week" }
+```
+
+`400` if `appointment_at` is not ISO-8601, `404` if unknown.
+
+### POST /api/followups/{id}/remind
+
+**Simulated**: nothing is actually sent. The response contains the SMS text in the patient's language
+and increments `reminders_sent`. Returns `400` if the follow-up is already attended or cancelled.
+
+```json
+{
+  "followup": { "followup_id": "f_0017", "reminders_sent": 1, "...": "..." },
+  "channel": "sms",
+  "language": "ro",
+  "message": "Bună ziua, Mihai Stan. Vă reamintim de la serviciul de screening oftalmologic: Trimitere la specialist, termen 05.12.2026. Vă rugăm să ne contactați pentru a programa sau confirma consultația.",
+  "simulated": true
+}
+```
+
+---
+
+## Dashboard
+
+### GET /api/dashboard
+
+```json
+{
+  "totals": { "patients": 30, "screenings": 50, "pending_review": 5, "open_referrals": 9 },
+  "triage": { "urgent": 5, "review": 5, "referable": 15, "retake": 4, "routine": 21 },
+  "followups": { "pending": 17, "scheduled": 2, "attended": 28, "missed": 4, "cancelled": 0, "overdue": 1 },
+  "attendance_rate": 0.875,
+  "by_country": [
+    { "country": "DE", "patients": 4, "screenings": 8, "referable_or_urgent": 3, "missed": 2 }
+  ],
+  "monthly": [
+    { "month": "2026-10", "screenings": 4, "referrals": 2 }
+  ]
+}
+```
+
+`attendance_rate` = attended / (attended + missed), or `null` if there's no data yet.
+`by_country` uses ISO country codes, which you can feed to a map of Europe.
+
+---
+
 ## Errors
 
 Every error has the same body: `{"detail": "<human-readable string>"}`.
 
 | Code | When |
 |---|---|
-| 400 | unsupported file type (not JPG/PNG), empty file, or image can't be decoded |
-| 404 | unknown case / sample, or heatmap of a case that failed quality |
+| 400 | unsupported file type (not JPG/PNG), empty file, or image can't be decoded; bad language; bad `appointment_at`; reminding a closed follow-up |
+| 404 | unknown case / sample / patient / follow-up / passport token, or heatmap of a case that failed quality |
+| 409 | patient already exists |
 | 413 | upload larger than `MAX_UPLOAD_MB` |
 | 422 | missing/invalid fields (e.g. no `image`, `clinician_grade` = 7) |
 | 500 | unexpected server error |

@@ -36,6 +36,51 @@ CREATE TABLE IF NOT EXISTS cases (
     thumbnail_path  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cases_level ON cases(triage_level);
+CREATE INDEX IF NOT EXISTS idx_cases_patient ON cases(patient_ref);
+
+-- Patients (simulated data in the demo). Cases link to them via patient_ref.
+CREATE TABLE IF NOT EXISTS patients (
+    patient_ref    TEXT PRIMARY KEY,
+    full_name      TEXT,
+    birth_year     INTEGER,
+    sex            TEXT,
+    country        TEXT,            -- ISO 3166-1 alpha-2, e.g. RO, DE
+    language       TEXT NOT NULL DEFAULT 'en',  -- preferred report language
+    diabetes_type  TEXT,
+    phone          TEXT,
+    email          TEXT,
+    simulated      INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL
+);
+
+-- One follow-up per case (referral, rescreen, retake, clinician review).
+CREATE TABLE IF NOT EXISTS followups (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    followup_id      TEXT UNIQUE,
+    case_id          TEXT NOT NULL,
+    patient_ref      TEXT,
+    type             TEXT NOT NULL,
+    due_date         TEXT NOT NULL,   -- YYYY-MM-DD
+    status           TEXT NOT NULL DEFAULT 'pending',
+    appointment_at   TEXT,
+    reminders_sent   INTEGER NOT NULL DEFAULT 0,
+    last_reminder_at TEXT,
+    note             TEXT,
+    resolved_case_id TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_followups_patient ON followups(patient_ref);
+CREATE INDEX IF NOT EXISTS idx_followups_case ON followups(case_id);
+
+-- Share tokens for the public European Retina Passport links.
+CREATE TABLE IF NOT EXISTS shares (
+    token      TEXT PRIMARY KEY,
+    case_id    TEXT NOT NULL,
+    language   TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
 """
 
 _URGENCY_SQL = "CASE triage_level " + " ".join(
@@ -79,7 +124,15 @@ def count_cases() -> int:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return iso(datetime.now(timezone.utc))
+
+
+def iso(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def create_case(
@@ -95,6 +148,7 @@ def create_case(
     image_mime: str,
     thumbnail_jpg: bytes,
     heatmap_png: Optional[bytes],
+    created_at: Optional[str] = None,
 ) -> dict:
     """Insert a case, write its files, and return the full case dict."""
     files_dir = _files_dir()
@@ -107,7 +161,7 @@ def create_case(
                        triage_level, triage_json, model_version, processing_ms, image_mime)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    now_iso(),
+                    created_at or now_iso(),
                     patient_ref,
                     json.dumps(quality),
                     json.dumps(prediction) if prediction else None,
@@ -165,6 +219,7 @@ def _to_case(row: sqlite3.Row) -> dict:
         },
         "model_version": row["model_version"],
         "processing_ms": row["processing_ms"],
+        "report_url": f"/api/cases/{cid}/report.pdf",
     }
 
 
@@ -202,6 +257,24 @@ def list_queue(review_status: Optional[str] = None, limit: int = 200) -> list[di
     params.append(limit)
     with connect() as conn:
         return [_to_summary(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def list_patient_cases(patient_ref: str) -> list[dict]:
+    """All cases of one patient, newest first (summaries)."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM cases WHERE patient_ref = ? AND case_id IS NOT NULL ORDER BY created_at DESC, id DESC",
+            (patient_ref,),
+        ).fetchall()
+    return [_to_summary(r) for r in rows]
+
+
+def update_triage(case_id: str, triage: dict) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE cases SET triage_level=?, triage_json=? WHERE case_id=?",
+            (triage["level"], json.dumps(triage), case_id),
+        )
 
 
 def update_review(case_id: str, status: str, clinician_grade: Optional[int], note: Optional[str]) -> Optional[dict]:
