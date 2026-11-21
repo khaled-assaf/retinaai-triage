@@ -1,0 +1,4 @@
+node_modules
+dist
+*.local
+scripts/.smoke-pdf.mjs

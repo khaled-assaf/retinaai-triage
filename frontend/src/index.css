@@ -1,0 +1,46 @@
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/newsreader";
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "Newsreader Variable", ui-serif, Georgia, serif;
+
+  /* Triage palette — used for badges, queue rows, passport accents */
+  --color-triage-urgent: #dc2626; /* red-600 */
+  --color-triage-review: #d97706; /* amber-600 */
+  --color-triage-referable: #ea580c; /* orange-600 */
+  --color-triage-retake: #475569; /* slate-600 */
+  --color-triage-routine: #16a34a; /* green-600 */
+
+  /* App accent — clinical teal */
+  --color-accent: #0f766e; /* teal-700 */
+}
+
+/* Layered, easy-on-the-eyes background: teal/sky glows + faint dot grid.
+   Base is a step deeper than slate-50 so white cards don't glare. */
+body {
+  background-color: #edf1f2;
+  background-image:
+    radial-gradient(60rem 32rem at 85% -10%, rgb(13 148 136 / 0.09), transparent 60%),
+    radial-gradient(50rem 28rem at -10% 110%, rgb(14 165 233 / 0.07), transparent 60%),
+    radial-gradient(rgb(15 23 42 / 0.035) 1px, transparent 1px);
+  background-size: auto, auto, 28px 28px;
+  background-attachment: fixed;
+}
+
+/* Intentional keyboard focus */
+:focus-visible {
+  outline: 2px solid rgb(13 148 136 / 0.6);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: rgb(13 148 136 / 0.2);
+}
+
+/* Slim, subtle scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
